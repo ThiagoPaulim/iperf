@@ -185,10 +185,11 @@ def run_single_test(
         ACTIVE_TESTS[task_id] = TestTask(interface=interface, mode=mode, process=process)
 
     final_mbps = 0.0
-    # Regex flexível para capturar a linha de throughput.
-    # Exemplo: [  5]   0.00-1.00   sec   128 MBytes  1.07 Gbits/sec
+    # Regex base para capturar throughput
+    # Formato padrão: [  5] ...
+    # Formato SUM:    [SUM] ...
     line_pattern = re.compile(
-        r"\[\s*\d+\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
+        r"\[\s*(\d+|SUM)\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
     )
 
     try:
@@ -200,9 +201,17 @@ def run_single_test(
 
             match = line_pattern.search(line)
             if match:
-                # O grupo 1 é Bytes/MBytes (ignorado), grupo 2 é valor, grupo 3 é unidade.
-                raw = float(match.group(2))
-                unit = match.group(3)
+                stream_id = match.group(1)  # ID ou SUM
+                # Se usarmos parallel > 1, queremos APENAS a linha [SUM].
+                # Se usarmos parallel = 1, queremos a linha normal (que tem ID numérico).
+                if parallel > 1 and stream_id != "SUM":
+                    continue
+                if parallel == 1 and stream_id == "SUM":
+                    continue
+
+                # O grupo 2 é Bytes/MBytes (ignorado), grupo 3 é valor, grupo 4 é unidade.
+                raw = float(match.group(3))
+                unit = match.group(4)
                 mbps = round(parse_mbps(raw, unit), 2)
                 final_mbps = mbps
                 socketio.emit(
