@@ -104,7 +104,7 @@ const centerTextPlugin = {
     // Unidade abaixo
     ctx.font = `normal ${(height / 200).toFixed(2)}em Segoe UI`;
     ctx.fillStyle = "#94a3b8";
-    const unit = "Mbits/s";
+    const unit = "Mbps";
     const unitX = Math.round((width - ctx.measureText(unit).width) / 2);
     ctx.fillText(unit, unitX, textY + height * 0.15);
 
@@ -337,7 +337,7 @@ socket.on("throughput_update", (msg) => {
 socket.on("test_result", (msg) => {
   const row = document.createElement("tr");
   const status = msg.success ? "OK" : "ERRO";
-  const result = msg.success ? `${msg.final_mbps} Mbits/s` : (msg.error || "Falha");
+  const result = msg.success ? `${msg.final_mbps} Mbps` : (msg.error || "Falha");
   row.innerHTML = `<td>${msg.interface}</td><td>${msg.mode}</td><td>${status}</td><td>${result}</td>`;
   resultsTable.appendChild(row);
   log(`Finalizado: ${msg.interface} ${msg.mode} -> ${result}`);
