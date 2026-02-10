@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>iperf3 Multi-Interface</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Teste de Desempenho de Rede (iperf3)</h1>
+
+      <section class="card">
+        <h2>Configuração</h2>
+        <div class="form-grid">
+          <label>
+            IP do servidor iperf3
+            <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
+          </label>
+          <label>
+            Tempo (segundos)
+            <input id="duration" type="number" min="1" max="3600" value="10" />
+          </label>
+          <label>
+            Modo
+            <select id="mode">
+              <option value="upload">Upload</option>
+              <option value="download">Download</option>
+              <option value="both">Ambos</option>
+            </select>
+          </label>
+        </div>
+
+        <h3>Interfaces detectadas</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Selecionar</th>
+              <th>Interface</th>
+              <th>IPv4</th>
+              <th>Velocidade</th>
+              <th>Duplex</th>
+              <th>Auto-negociação</th>
+            </tr>
+          </thead>
+          <tbody id="interfacesTable"></tbody>
+        </table>
+
+        <button id="startBtn">Iniciar teste</button>
+      </section>
+
+      <section class="card gauges">
+        <h2>Velocímetros (Mbits/s)</h2>
+        <div class="gauge-grid">
+          <div>
+            <h3>Upload</h3>
+            <canvas id="uploadGauge"></canvas>
+          </div>
+          <div>
+            <h3>Download</h3>
+            <canvas id="downloadGauge"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Throughput em tempo real por interface</h2>
+        <canvas id="throughputChart"></canvas>
+      </section>
+
+      <section class="card">
+        <h2>Resultados finais</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Interface</th>
+              <th>Modo</th>
+              <th>Status</th>
+              <th>Resultado</th>
+            </tr>
+          </thead>
+          <tbody id="resultsTable"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+  </body>
+</html>
