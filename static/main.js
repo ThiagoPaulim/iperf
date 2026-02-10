@@ -112,6 +112,7 @@ startBtn.addEventListener("click", () => {
   const serverIp = document.getElementById("serverIp").value.trim();
   const duration = Number(document.getElementById("duration").value);
   const mode = document.getElementById("mode").value;
+  const basePort = Number(document.getElementById("basePort").value) || 5201;
   const interfaces = [...document.querySelectorAll(".iface-check:checked")].map((el) => el.value);
 
   // Limpa estado anterior.
@@ -127,6 +128,7 @@ startBtn.addEventListener("click", () => {
     server_ip: serverIp,
     duration,
     mode,
+    base_port: basePort,
     interfaces,
   });
 });

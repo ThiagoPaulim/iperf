@@ -31,7 +31,16 @@
               <option value="both">Ambos</option>
             </select>
           </label>
+          <label>
+            Porta base do servidor
+            <input id="basePort" type="number" min="1" max="65535" value="5201" />
+          </label>
         </div>
+        <p class="form-note">
+          <strong>Nota:</strong> Cada interface usa uma porta diferente no servidor iperf3 (porta base, base+1, base+2...).
+          Certifique-se de ter instâncias iperf3 rodando em cada porta no servidor.
+          <br>Ex: <code>iperf3 -s -p 5201</code>, <code>iperf3 -s -p 5202</code>, <code>iperf3 -s -p 5203</code>...
+        </p>
 
         <h3>Interfaces detectadas</h3>
         <table>

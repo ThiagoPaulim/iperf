@@ -132,6 +132,14 @@ def validate_payload(payload: dict) -> Optional[str]:
     if not isinstance(payload["interfaces"], list) or not payload["interfaces"]:
         return "Selecione ao menos uma interface."
 
+    try:
+        base_port = int(payload.get("base_port", 5201))
+    except (TypeError, ValueError):
+        return "Porta base deve ser numérica."
+
+    if base_port < 1 or base_port > 65535:
+        return "Porta base deve estar entre 1 e 65535."
+
     available = {item["name"] for item in list_interfaces()}
     for iface in payload["interfaces"]:
         if iface not in available:
@@ -140,11 +148,11 @@ def validate_payload(payload: dict) -> Optional[str]:
     return None
 
 
-def run_single_test(server_ip: str, duration: int, interface: str, mode: str, sid: str) -> None:
+def run_single_test(server_ip: str, duration: int, interface: str, mode: str, sid: str, port: int) -> None:
     """Executa um único fluxo iperf e envia atualizações em tempo real."""
 
     task_id = f"{interface}:{mode}"
-    cmd = [str(RUNNER_SCRIPT), interface, server_ip, str(duration), mode]
+    cmd = [str(RUNNER_SCRIPT), interface, server_ip, str(duration), mode, str(port)]
 
     process = subprocess.Popen(
         cmd,
@@ -242,13 +250,17 @@ def start_test(payload: dict):
     server_ip = payload["server_ip"]
     duration = int(payload["duration"])
     interfaces = payload["interfaces"]
+    base_port = int(payload.get("base_port", 5201))
     modes = [payload["mode"]] if payload["mode"] != "both" else ["upload", "download"]
 
     emit("test_started", {"interfaces": interfaces, "modes": modes})
 
+    port_idx = 0
     for iface in interfaces:
         for mode in modes:
-            socketio.start_background_task(run_single_test, server_ip, duration, iface, mode, sid)
+            port = base_port + port_idx
+            socketio.start_background_task(run_single_test, server_ip, duration, iface, mode, sid, port)
+            port_idx += 1
 
 
 if __name__ == "__main__":

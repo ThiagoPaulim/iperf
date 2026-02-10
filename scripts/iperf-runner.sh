@@ -3,10 +3,10 @@ set -euo pipefail
 
 # Script auxiliar para executar um fluxo iperf3 ligado a uma interface específica.
 # Cria policy routing temporário para garantir que o tráfego saia pela interface correta.
-# Uso: iperf-runner.sh <interface> <server_ip> <duration_s> <upload|download>
+# Uso: iperf-runner.sh <interface> <server_ip> <duration_s> <upload|download> <port>
 
-if [[ $# -ne 4 ]]; then
-  echo "Uso: $0 <interface> <server_ip> <duration_s> <upload|download>" >&2
+if [[ $# -ne 5 ]]; then
+  echo "Uso: $0 <interface> <server_ip> <duration_s> <upload|download> <port>" >&2
   exit 2
 fi
 
@@ -14,6 +14,7 @@ IFACE="$1"
 SERVER_IP="$2"
 DURATION="$3"
 MODE="$4"
+PORT="$5"
 
 # Validação básica para evitar entradas não previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -30,6 +31,10 @@ if [[ ! "$DURATION" =~ ^[0-9]+$ ]]; then
 fi
 if [[ "$MODE" != "upload" && "$MODE" != "download" ]]; then
   echo "Modo inválido" >&2
+  exit 2
+fi
+if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
+  echo "Porta inválida" >&2
   exit 2
 fi
 
@@ -101,7 +106,7 @@ fi
 
 # ---------- Execução do iperf3 ----------
 
-CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP")
+CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT")
 if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi
