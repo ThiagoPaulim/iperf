@@ -6,10 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Dependências de sistema para testes de rede e inspeção de interfaces.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     iperf3 \
-    ethtool \
     iproute2 \
+    ethtool \
+    net-tools \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

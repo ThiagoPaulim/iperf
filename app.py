@@ -325,6 +325,8 @@ def start_test(payload: dict):
                 except Exception as e:
                     print(f"Erro ao parar teste {tid}: {e}", flush=True)
             ACTIVE_TESTS.clear()
+            # Aguarda um pouco para o SO limpar recursos e scripts terminarem rodando cleanup
+            time.sleep(1)
 
     error = validate_payload(payload)
     if error:

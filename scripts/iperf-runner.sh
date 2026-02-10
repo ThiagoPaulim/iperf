@@ -93,8 +93,14 @@ trap cleanup EXIT
 
 # Só cria policy routing se encontrou um gateway.
 if [[ -n "$GATEWAY" ]]; then
-  # Remove regras antigas que possam existir para este IP/tabela.
-  ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  # Remove regras antigas que possam existir para este IP/tabela a força bruta
+  # Isso garante que não haja regras duplicadas ou órfãs de execuções anteriores
+  while ip rule show | grep -q "from $BIND_IP lookup $TABLE_ID"; do
+      ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  done
+  while ip rule show | grep -q "lookup $TABLE_ID"; do
+      ip rule del table "$TABLE_ID" 2>/dev/null || true
+  done
   ip route flush table "$TABLE_ID" 2>/dev/null || true
 
   # Adiciona rota na tabela dedicada.
@@ -106,11 +112,11 @@ if [[ -n "$GATEWAY" ]]; then
   fi
 
   # Adiciona regra: tráfego com source IP = BIND_IP usa a tabela dedicada.
-  ip rule add from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  ip rule add from "$BIND_IP" table "$TABLE_ID"
 
   RULES_CREATED=1
 
-  echo "Policy routing criado: from $BIND_IP table $TABLE_ID via $GATEWAY dev $IFACE" >&2
+  echo "DEBUG: Policy routing criado (Table $TABLE_ID): from $BIND_IP via $GATEWAY dev $IFACE" >&2
 else
   echo "AVISO: Gateway não encontrado para $IFACE. Usando roteamento padrão." >&2
 fi
