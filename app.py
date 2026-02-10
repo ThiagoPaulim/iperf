@@ -126,7 +126,7 @@ def validate_payload(payload: dict) -> Optional[str]:
     if duration < 1 or duration > 3600:
         return "Tempo do teste deve estar entre 1 e 3600 segundos."
 
-    if payload["mode"] not in {"upload", "download", "both"}:
+    if payload["mode"] not in {"upload", "download", "both", "both_sequential"}:
         return "Modo inválido."
 
     if not isinstance(payload["interfaces"], list) or not payload["interfaces"]:
@@ -220,6 +220,26 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str, si
             ACTIVE_TESTS.pop(task_id, None)
 
 
+def run_sequential_both(
+    server_ip: str, duration: int, interfaces: List[str], sid: str, base_port: int
+) -> None:
+    """Executa upload em todas as interfaces, espera, depois download."""
+
+    for phase_mode in ["upload", "download"]:
+        socketio.emit("phase_started", {"mode": phase_mode}, room=sid)
+        threads = []
+        for idx, iface in enumerate(interfaces):
+            port = base_port + idx
+            t = threading.Thread(
+                target=run_single_test,
+                args=(server_ip, duration, iface, phase_mode, sid, port),
+            )
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -251,16 +271,32 @@ def start_test(payload: dict):
     duration = int(payload["duration"])
     interfaces = payload["interfaces"]
     base_port = int(payload.get("base_port", 5201))
-    modes = [payload["mode"]] if payload["mode"] != "both" else ["upload", "download"]
+    selected_mode = payload["mode"]
+
+    if selected_mode == "both_sequential":
+        modes = ["upload", "download"]
+    elif selected_mode == "both":
+        modes = ["upload", "download"]
+    else:
+        modes = [selected_mode]
 
     emit("test_started", {"interfaces": interfaces, "modes": modes})
 
-    port_idx = 0
-    for iface in interfaces:
-        for mode in modes:
-            port = base_port + port_idx
-            socketio.start_background_task(run_single_test, server_ip, duration, iface, mode, sid, port)
-            port_idx += 1
+    if selected_mode == "both_sequential":
+        # Modo sequencial: upload em todas, espera, depois download em todas.
+        socketio.start_background_task(
+            run_sequential_both, server_ip, duration, interfaces, sid, base_port
+        )
+    else:
+        # Modos simultâneos: todos os testes ao mesmo tempo.
+        port_idx = 0
+        for iface in interfaces:
+            for mode in modes:
+                port = base_port + port_idx
+                socketio.start_background_task(
+                    run_single_test, server_ip, duration, iface, mode, sid, port
+                )
+                port_idx += 1
 
 
 if __name__ == "__main__":

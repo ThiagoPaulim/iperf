@@ -29,7 +29,7 @@ body {
 
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -55,6 +55,11 @@ button {
   color: #0b1220;
   font-weight: bold;
   cursor: pointer;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: #06b6d4;
 }
 
 table {
@@ -70,10 +75,73 @@ td {
   text-align: left;
 }
 
-.gauge-grid {
+/* ---------- Gauges dinâmicos por interface ---------- */
+
+.gauge-container {
   display: grid;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
+}
+
+.interface-gauge-wrapper {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.interface-gauge-wrapper.total-gauges {
+  border-color: var(--accent);
+  grid-column: 1 / -1;
+}
+
+.gauge-iface-title {
+  text-align: center;
+  margin: 0 0 8px 0;
+  font-size: 1rem;
+  color: var(--accent);
+}
+
+.gauge-iface-title.total-title {
+  color: #fbbf24;
+  font-size: 1.1rem;
+}
+
+.gauge-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.gauge-item {
+  text-align: center;
+}
+
+.gauge-item h4 {
+  margin: 0 0 4px 0;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.placeholder-text {
+  text-align: center;
+  color: #64748b;
+  font-style: italic;
+  padding: 20px 0;
+}
+
+.form-note {
+  margin: 10px 0 0 0;
+  font-size: 0.85rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.form-note code {
+  background: #0b1220;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.8rem;
 }
 
 pre {
@@ -86,8 +154,10 @@ pre {
 }
 
 @media (max-width: 900px) {
-  .form-grid,
-  .gauge-grid {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .gauge-container {
     grid-template-columns: 1fr;
   }
 }

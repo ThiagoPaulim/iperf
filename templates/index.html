@@ -1,105 +1,103 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>iperf3 Multi-Interface</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  </head>
-  <body>
-    <main class="container">
-      <h1>Teste de Desempenho de Rede (iperf3)</h1>
 
-      <section class="card">
-        <h2>Configuração</h2>
-        <div class="form-grid">
-          <label>
-            IP do servidor iperf3
-            <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
-          </label>
-          <label>
-            Tempo (segundos)
-            <input id="duration" type="number" min="1" max="3600" value="10" />
-          </label>
-          <label>
-            Modo
-            <select id="mode">
-              <option value="upload">Upload</option>
-              <option value="download">Download</option>
-              <option value="both">Ambos</option>
-            </select>
-          </label>
-          <label>
-            Porta base do servidor
-            <input id="basePort" type="number" min="1" max="65535" value="5201" />
-          </label>
-        </div>
-        <p class="form-note">
-          <strong>Nota:</strong> Cada interface usa uma porta diferente no servidor iperf3 (porta base, base+1, base+2...).
-          Certifique-se de ter instâncias iperf3 rodando em cada porta no servidor.
-          <br>Ex: <code>iperf3 -s -p 5201</code>, <code>iperf3 -s -p 5202</code>, <code>iperf3 -s -p 5203</code>...
-        </p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>iperf3 Multi-Interface</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
 
-        <h3>Interfaces detectadas</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Selecionar</th>
-              <th>Interface</th>
-              <th>IPv4</th>
-              <th>Velocidade</th>
-              <th>Duplex</th>
-              <th>Auto-negociação</th>
-            </tr>
-          </thead>
-          <tbody id="interfacesTable"></tbody>
-        </table>
+<body>
+  <main class="container">
+    <h1>Teste de Desempenho de Rede (iperf3)</h1>
 
-        <button id="startBtn">Iniciar teste</button>
-      </section>
+    <section class="card">
+      <h2>Configuração</h2>
+      <div class="form-grid">
+        <label>
+          IP do servidor iperf3
+          <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
+        </label>
+        <label>
+          Tempo (segundos)
+          <input id="duration" type="number" min="1" max="3600" value="10" />
+        </label>
+        <label>
+          Modo
+          <select id="mode">
+            <option value="upload">Upload</option>
+            <option value="download">Download</option>
+            <option value="both">Ambos (simultâneo)</option>
+            <option value="both_sequential">Ambos - Separados</option>
+          </select>
+        </label>
+        <label>
+          Porta base do servidor
+          <input id="basePort" type="number" min="1" max="65535" value="5201" />
+        </label>
+      </div>
+      <p class="form-note">
+        <strong>Nota:</strong> Cada interface usa uma porta diferente no servidor iperf3 (porta base, base+1,
+        base+2...).
+        Certifique-se de ter instâncias iperf3 rodando em cada porta no servidor.
+        <br>Ex: <code>iperf3 -s -p 5201</code>, <code>iperf3 -s -p 5202</code>, <code>iperf3 -s -p 5203</code>...
+      </p>
 
-      <section class="card gauges">
-        <h2>Velocímetros (Mbits/s)</h2>
-        <div class="gauge-grid">
-          <div>
-            <h3>Upload</h3>
-            <canvas id="uploadGauge"></canvas>
-          </div>
-          <div>
-            <h3>Download</h3>
-            <canvas id="downloadGauge"></canvas>
-          </div>
-        </div>
-      </section>
+      <h3>Interfaces detectadas</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Selecionar</th>
+            <th>Interface</th>
+            <th>IPv4</th>
+            <th>Velocidade</th>
+            <th>Duplex</th>
+            <th>Auto-negociação</th>
+          </tr>
+        </thead>
+        <tbody id="interfacesTable"></tbody>
+      </table>
 
-      <section class="card">
-        <h2>Throughput em tempo real por interface</h2>
-        <canvas id="throughputChart"></canvas>
-      </section>
+      <button id="startBtn">Iniciar teste</button>
+    </section>
 
-      <section class="card">
-        <h2>Resultados finais</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Interface</th>
-              <th>Modo</th>
-              <th>Status</th>
-              <th>Resultado</th>
-            </tr>
-          </thead>
-          <tbody id="resultsTable"></tbody>
-        </table>
-      </section>
+    <section class="card">
+      <h2>Velocímetros por Interface (Mbits/s)</h2>
+      <div id="gaugeContainer" class="gauge-container">
+        <p class="placeholder-text">Inicie um teste para ver os velocímetros.</p>
+      </div>
+    </section>
 
-      <section class="card">
-        <h2>Log</h2>
-        <pre id="log"></pre>
-      </section>
-    </main>
+    <section class="card">
+      <h2>Throughput em tempo real por interface</h2>
+      <canvas id="throughputChart"></canvas>
+    </section>
 
-    <script src="{{ url_for('static', filename='main.js') }}"></script>
-  </body>
+    <section class="card">
+      <h2>Resultados finais</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Interface</th>
+            <th>Modo</th>
+            <th>Status</th>
+            <th>Resultado</th>
+          </tr>
+        </thead>
+        <tbody id="resultsTable"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+
 </html>
