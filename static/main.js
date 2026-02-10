@@ -21,10 +21,37 @@ const throughputChart = new Chart(throughputCtx, {
   data: { labels: [], datasets: [] },
   options: {
     responsive: true,
-    animation: false,
-    scales: {
-      y: { title: { display: true, text: "Mbits/s" } },
+    maintainAspectRatio: false,
+    animation: { duration: 0 },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#cbd5e1', font: { family: 'Segoe UI', size: 11 } } },
+      tooltip: {
+        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+        titleColor: '#e2e8f0',
+        bodyColor: '#cbd5e1',
+        borderColor: 'rgba(51, 65, 85, 0.5)',
+        borderWidth: 1,
+        padding: 10,
+        displayColors: true,
+      }
     },
+    scales: {
+      x: {
+        grid: { display: false, color: '#334155' },
+        ticks: { color: '#94a3b8', maxTicksLimit: 8 }
+      },
+      y: {
+        grid: { color: '#334155', borderDash: [5, 5] },
+        ticks: { color: '#94a3b8' },
+        title: { display: true, text: "Mbits/s", color: '#64748b', font: { size: 10, weight: 600 } },
+        beginAtZero: true
+      },
+    },
+    elements: {
+      line: { tension: 0.4, borderWidth: 2 },
+      point: { radius: 0, hitRadius: 10, hoverRadius: 4 }
+    }
   },
 });
 
@@ -45,10 +72,22 @@ function log(msg) {
   logBox.scrollTop = logBox.scrollHeight;
 }
 
+/**
+ * Cores modernas para os gráficos
+ */
+const modernColors = [
+  '#22d3ee', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#60a5fa'
+];
+
+function colorForIndex(index) {
+  return modernColors[index % modernColors.length];
+}
+
+// Polyfill para compatibilidade caso ainda haja referência antiga
 function colorForKey(key) {
   let hash = 0;
   for (let i = 0; i < key.length; i += 1) hash = key.charCodeAt(i) + ((hash << 5) - hash);
-  return `hsl(${Math.abs(hash) % 360}, 80%, 60%)`;
+  return colorForIndex(Math.abs(hash));
 }
 
 function createGauge(ctx, label) {
@@ -56,14 +95,40 @@ function createGauge(ctx, label) {
     type: "doughnut",
     data: {
       labels: ["Atual", "Restante"],
-      datasets: [{ data: [0, 1000], backgroundColor: ["#22d3ee", "#1f2937"] }],
+      datasets: [{
+        data: [0, 1000],
+        backgroundColor: (context) => {
+          const chart = context.chart;
+          const { ctx, chartArea } = chart;
+          if (!chartArea) return null;
+          // Gradiente para o valor
+          const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+          gradient.addColorStop(0, '#0ea5e9'); // Azul escuro
+          gradient.addColorStop(1, '#22d3ee'); // Cyan
+          return [gradient, '#1e293b']; // Valor, Fundo
+        },
+        borderWidth: 0,
+        borderRadius: 20, // Bordas arredondadas
+        cutout: '85%',    // Espessura fina
+      }],
     },
     options: {
-      circumference: 180,
-      rotation: 270,
+      responsive: true,
+      maintainAspectRatio: true,
+      circumference: 260, // Semicírculo expandido
+      rotation: 230,      // Início estilo velocímetro
+      animation: { animateRotate: false, animateScale: false },
       plugins: {
         legend: { display: false },
-        title: { display: true, text: `${label}: 0 Mbits/s`, color: "#e2e8f0" },
+        title: {
+          display: true,
+          text: `0 Mbits/s`,
+          color: "#e2e8f0",
+          font: { size: 14, weight: 'bold', family: 'Segoe UI' },
+          padding: { top: 10, bottom: 0 },
+          position: 'bottom'
+        },
+        tooltip: { enabled: false } // Valor já está no título
       },
     },
   });
@@ -72,12 +137,20 @@ function createGauge(ctx, label) {
 function getDataset(label) {
   let ds = throughputChart.data.datasets.find((item) => item.label === label);
   if (!ds) {
+    const color = colorForIndex(throughputChart.data.datasets.length);
     ds = {
       label,
       data: [],
-      borderColor: colorForKey(label),
-      backgroundColor: "transparent",
-      tension: 0.2,
+      borderColor: color,
+      backgroundColor: (context) => {
+        const ctx = context.chart.ctx;
+        const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+        gradient.addColorStop(0, color + '40'); // 25% opacidade
+        gradient.addColorStop(1, color + '00'); // 0% opacidade
+        return gradient;
+      },
+      fill: true,
+      tension: 0.4,
     };
     throughputChart.data.datasets.push(ds);
   }
