@@ -1,21 +1,29 @@
 const socket = io();
 
+// Elementos da DOM
 const interfacesTable = document.getElementById("interfacesTable");
 const resultsTable = document.getElementById("resultsTable");
-const metricsTable = document.getElementById("metricsTable"); // Novo elemento
+const metricsTable = document.getElementById("metricsTable");
 const logBox = document.getElementById("log");
 const startBtn = document.getElementById("startBtn");
 const gaugeContainer = document.getElementById("gaugeContainer");
-
-// Elementos da barra de status
 const cpuVal = document.getElementById("cpuVal");
 const cpuBar = document.getElementById("cpuBar");
 const ramVal = document.getElementById("ramVal");
 const ramBar = document.getElementById("ramBar");
 const ramDetails = document.getElementById("ramDetails");
-
 const throughputCtx = document.getElementById("throughputChart");
 
+// Variáveis Globais
+const interfaceGauges = {};
+const latestThroughput = { upload: {}, download: {} };
+
+function log(msg) {
+  logBox.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+// Configuração do Gráfico de Linha (Throughput)
 const throughputChart = new Chart(throughputCtx, {
   type: "line",
   data: { labels: [], datasets: [] },
@@ -55,26 +63,7 @@ const throughputChart = new Chart(throughputCtx, {
   },
 });
 
-/**
- * Armazena gauges dinâmicos criados por interface.
- * Formato: { "eth0": { upload: Chart, download: Chart }, ... }
- */
-const interfaceGauges = {};
-
-/**
- * Armazena o último throughput por interface/modo para soma total.
- * Formato: { upload: { "eth0": 450 }, download: { "eth0": 320 } }
- */
-const latestThroughput = { upload: {}, download: {} };
-
-function log(msg) {
-  logBox.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
-  logBox.scrollTop = logBox.scrollHeight;
-}
-
-/**
- * Cores modernas para os gráficos
- */
+// Cores e Utilitários
 const modernColors = [
   '#22d3ee', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#60a5fa'
 ];
@@ -83,14 +72,52 @@ function colorForIndex(index) {
   return modernColors[index % modernColors.length];
 }
 
-// Polyfill para compatibilidade caso ainda haja referência antiga
 function colorForKey(key) {
   let hash = 0;
   for (let i = 0; i < key.length; i += 1) hash = key.charCodeAt(i) + ((hash << 5) - hash);
   return colorForIndex(Math.abs(hash));
 }
 
+// Plugin para desenhar texto no centro do Doughnut
+const centerTextPlugin = {
+  id: 'centerText',
+  beforeDraw: function (chart) {
+    if (chart.config.type !== 'doughnut') return;
+    const width = chart.width,
+      height = chart.height,
+      ctx = chart.ctx;
+
+    ctx.restore();
+
+    // Configuração do texto
+    const fontSize = (height / 114).toFixed(2);
+    ctx.font = `bold ${fontSize}em Segoe UI`;
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#e2e8f0";
+
+    const text = chart.config.options.plugins.centerText.text || "0.00";
+    const textX = Math.round((width - ctx.measureText(text).width) / 2);
+    const textY = height / 1.8; // Um pouco abaixo do meio visual devido ao arco
+
+    ctx.fillText(text, textX, textY);
+
+    // Unidade abaixo
+    ctx.font = `normal ${(height / 200).toFixed(2)}em Segoe UI`;
+    ctx.fillStyle = "#94a3b8";
+    const unit = "Mbits/s";
+    const unitX = Math.round((width - ctx.measureText(unit).width) / 2);
+    ctx.fillText(unit, unitX, textY + height * 0.15);
+
+    ctx.save();
+  }
+};
+
+Chart.register(centerTextPlugin);
+
 function createGauge(ctx, label) {
+  // label vem como "eth0 upload". Vamos extrair apenas o modo.
+  const mode = label.split(' ').pop().toUpperCase();
+
   return new Chart(ctx, {
     type: "doughnut",
     data: {
@@ -101,34 +128,34 @@ function createGauge(ctx, label) {
           const chart = context.chart;
           const { ctx, chartArea } = chart;
           if (!chartArea) return null;
-          // Gradiente para o valor
           const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
-          gradient.addColorStop(0, '#0ea5e9'); // Azul escuro
-          gradient.addColorStop(1, '#22d3ee'); // Cyan
-          return [gradient, '#1e293b']; // Valor, Fundo
+          gradient.addColorStop(0, '#0ea5e9');
+          gradient.addColorStop(1, '#22d3ee');
+          return [gradient, '#1e293b'];
         },
         borderWidth: 0,
-        borderRadius: 20, // Bordas arredondadas
-        cutout: '85%',    // Espessura fina
+        borderRadius: 20,
+        cutout: '85%',
       }],
     },
     options: {
       responsive: true,
       maintainAspectRatio: true,
-      circumference: 260, // Semicírculo expandido
-      rotation: 230,      // Início estilo velocímetro
+      circumference: 260,
+      rotation: 230,
       animation: { animateRotate: false, animateScale: false },
       plugins: {
         legend: { display: false },
         title: {
           display: true,
-          text: `0 Mbits/s`,
-          color: "#e2e8f0",
-          font: { size: 14, weight: 'bold', family: 'Segoe UI' },
-          padding: { top: 10, bottom: 0 },
-          position: 'bottom'
+          text: mode, // Apenas UPLOAD ou DOWNLOAD
+          color: "#94a3b8",
+          font: { size: 12, weight: 'bold', family: 'Segoe UI' },
+          padding: { bottom: 10 },
+          position: 'top'
         },
-        tooltip: { enabled: false } // Valor já está no título
+        tooltip: { enabled: false },
+        centerText: { text: "0.00" } // Estado inicial
       },
     },
   });
@@ -145,8 +172,8 @@ function getDataset(label) {
       backgroundColor: (context) => {
         const ctx = context.chart.ctx;
         const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-        gradient.addColorStop(0, color + '40'); // 25% opacidade
-        gradient.addColorStop(1, color + '00'); // 0% opacidade
+        gradient.addColorStop(0, color + '40');
+        gradient.addColorStop(1, color + '00');
         return gradient;
       },
       fill: true,
@@ -157,23 +184,18 @@ function getDataset(label) {
   return ds;
 }
 
-/** Cria os gauges dinâmicos para cada interface selecionada. */
 function createInterfaceGauges(interfaces, modes) {
-  // Limpa gauges anteriores.
   gaugeContainer.innerHTML = "";
 
-  // Destrói instâncias Chart.js anteriores.
   Object.values(interfaceGauges).forEach((gauges) => {
     if (gauges.upload) gauges.upload.destroy();
     if (gauges.download) gauges.download.destroy();
   });
 
-  // Limpa referências.
   for (const key of Object.keys(interfaceGauges)) {
     delete interfaceGauges[key];
   }
 
-  // Cria gauges para cada interface.
   interfaces.forEach((iface) => {
     const wrapper = document.createElement("div");
     wrapper.className = "interface-gauge-wrapper";
@@ -192,9 +214,12 @@ function createInterfaceGauges(interfaces, modes) {
       const modeDiv = document.createElement("div");
       modeDiv.className = "gauge-item";
 
-      const modeLabel = document.createElement("h4");
-      modeLabel.textContent = mode === "upload" ? "Upload" : "Download";
-      modeDiv.appendChild(modeLabel);
+      // O label "Upload/Download" agora é gerenciado pelo próprio gauge title (chartjs),
+      // mas podemos manter o header h4 se quisermos redundância ou controle de layout.
+      // A request do usuário pedia "UPLOAD no meio dos arcos". 
+      // Com o Gauge novo, o Title é "UPLOAD" no topo e o valor no meio.
+      // Vou esconder este h4 via CSS ou removê-lo aqui para ficar mais limpo.
+      // Decisão: Remover o h4 HTML e deixar só o Chart Title.
 
       const canvas = document.createElement("canvas");
       canvas.id = `gauge-${iface}-${mode}`;
@@ -210,11 +235,10 @@ function createInterfaceGauges(interfaces, modes) {
   });
 }
 
-/** Atualiza um gauge específico. */
 function updateGauge(gauge, label, mbps) {
-  const rounded = Math.round(mbps * 100) / 100;
-  gauge.data.datasets[0].data = [rounded, Math.max(0, 1000 - rounded)];
-  gauge.options.plugins.title.text = `${label}: ${rounded} Mbits/s`;
+  const rounded = (Math.round(mbps * 100) / 100).toFixed(2);
+  gauge.data.datasets[0].data = [mbps, Math.max(0, 1000 - mbps)];
+  gauge.options.plugins.centerText.text = rounded;
   gauge.update();
 }
 
@@ -245,10 +269,9 @@ startBtn.addEventListener("click", () => {
   const parallel = Number(document.getElementById("parallel").value) || 4;
   const interfaces = [...document.querySelectorAll(".iface-check:checked")].map((el) => el.value);
 
-  // Limpa estado anterior.
   resultsTable.innerHTML = "";
   if (metricsTable) {
-    metricsTable.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#64748b;">Aguardando métricas...</td></tr>`;
+    metricsTable.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#64748b;">Aguardando métricas...</td></tr>`;
   }
   throughputChart.data.labels = [];
   throughputChart.data.datasets = [];
@@ -269,7 +292,6 @@ startBtn.addEventListener("click", () => {
 
 socket.on("test_started", (msg) => {
   log(`Testes iniciados para interfaces: ${msg.interfaces.join(", ")}. Modos: ${msg.modes.join(", ")}`);
-  // Cria gauges dinâmicos para as interfaces selecionadas.
   createInterfaceGauges(msg.interfaces, msg.modes);
 });
 
@@ -279,7 +301,6 @@ socket.on("phase_started", (msg) => {
 
 socket.on("metrics_update", (msg) => {
   if (!metricsTable) return;
-  // Se for a primeira métrica, limpa o placeholder
   const placeholder = metricsTable.querySelector("td[colspan]");
   if (placeholder) {
     metricsTable.removeChild(placeholder.parentElement);
@@ -304,7 +325,6 @@ socket.on("throughput_update", (msg) => {
   dataset.data.push(msg.mbps);
   throughputChart.update();
 
-  // Atualiza gauge da interface específica.
   if (interfaceGauges[msg.interface] && interfaceGauges[msg.interface][msg.mode]) {
     updateGauge(
       interfaceGauges[msg.interface][msg.mode],
@@ -327,7 +347,6 @@ socket.on("test_error", (msg) => {
   log(`Erro: ${msg.message}`);
 });
 
-// Listener para monitoramento de sistema (CPU/RAM)
 socket.on("system_status", (msg) => {
   cpuVal.textContent = `${msg.cpu}%`;
   cpuBar.style.width = `${msg.cpu}%`;
