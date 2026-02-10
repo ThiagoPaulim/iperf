@@ -30,13 +30,13 @@
       <div class="stat-details" id="ramDetails">-- GB / -- GB</div>
     </div>
 
-    <h1>Teste de Desempenho de Rede (iperf3)</h1>
+    <h1>Teste de Desempenho de Rede</h1>
 
     <section class="card">
       <h2>Configuração</h2>
       <div class="form-grid">
         <label>
-          IP do servidor iperf3
+          IP do servidor
           <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
         </label>
         <label>
@@ -53,7 +53,7 @@
           </select>
         </label>
         <label>
-          Porta base do servidor
+          Porta do servidor
           <input id="basePort" type="number" min="1" max="65535" value="5201" />
         </label>
         <label>
@@ -88,14 +88,14 @@
     </section>
 
     <section class="card">
-      <h2>Velocímetros por Interface (Mbits/s)</h2>
+      <h2>SpeedTest por Interface (Mbits/s)</h2>
       <div id="gaugeContainer" class="gauge-container">
         <p class="placeholder-text">Inicie um teste para ver os velocímetros.</p>
       </div>
     </section>
 
     <section class="card">
-      <h2>Throughput em tempo real por interface</h2>
+      <h2>Throughput por Interface</h2>
       <canvas id="throughputChart"></canvas>
     </section>
 
