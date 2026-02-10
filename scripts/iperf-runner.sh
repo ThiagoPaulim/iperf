@@ -115,7 +115,33 @@ else
   echo "AVISO: Gateway não encontrado para $IFACE. Usando roteamento padrão." >&2
 fi
 
-# ---------- Execução do iperf3 ----------
+# ---------- Métricas Iniciais (Ping / Jitter) ----------
+
+echo "Coletando métricas..." >&2
+
+# 1. Ping (Latência)
+# Envia 3 pings rápidos. Pega a média (campo 2 da linha rtt).
+PING_AVG=$(ping -4 -c 3 -i 0.2 -W 1 -I "$BIND_IP" "$SERVER_IP" | tail -1 | awk -F '/' '{print $5}' 2>/dev/null || echo "0")
+
+# 2. Jitter (via iperf3 UDP, teste curto de 1s)
+# Usa-se banda baixa (1M) para não saturar e apenas medir qualidade.
+# Output esperado do grep: " 0.045 ms "
+JITTER_VAL="0"
+JITTER_OUT=$(iperf3 -c "$SERVER_IP" -u -t 1 -b 1M -B "$BIND_IP" -p "$PORT" --forceflush 2>/dev/null | grep "ms" | tail -1 | awk '{print $(NF-2)}' || echo "0")
+# O awk pega o antipenúltimo campo pois o formato é:  1.05 Mbits/sec  0.038 ms  0/95 (0%)
+# Mas às vezes pode variar. Vamos tentar pegar o valor antes de "ms".
+# Uma abordagem mais segura com grep.
+
+if [[ -z "$JITTER_OUT" ]]; then
+   JITTER_VAL="0"
+else
+   JITTER_VAL="$JITTER_OUT"
+fi
+
+# Formata saída para o Python capturar
+echo "[METRICS] Ping: $PING_AVG ms | Jitter: $JITTER_VAL ms"
+
+# ---------- Execução do iperf3 (Teste Principal) ----------
 
 # Adicionamos -P (parallel) e --forceflush
 # Também adicionamos -w 1M (janela TCP) por padrão para ajudar performance

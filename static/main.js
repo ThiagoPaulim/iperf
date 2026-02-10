@@ -2,6 +2,7 @@ const socket = io();
 
 const interfacesTable = document.getElementById("interfacesTable");
 const resultsTable = document.getElementById("resultsTable");
+const metricsTable = document.getElementById("metricsTable"); // Novo elemento
 const logBox = document.getElementById("log");
 const startBtn = document.getElementById("startBtn");
 const gaugeContainer = document.getElementById("gaugeContainer");
@@ -134,8 +135,6 @@ function createInterfaceGauges(interfaces, modes) {
     gaugeContainer.appendChild(wrapper);
     interfaceGauges[iface] = gauges;
   });
-
-  // NOTA: A seção "TOTAL (soma)" foi removida conforme solicitado.
 }
 
 /** Atualiza um gauge específico. */
@@ -175,6 +174,9 @@ startBtn.addEventListener("click", () => {
 
   // Limpa estado anterior.
   resultsTable.innerHTML = "";
+  if (metricsTable) {
+    metricsTable.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#64748b;">Aguardando métricas...</td></tr>`;
+  }
   throughputChart.data.labels = [];
   throughputChart.data.datasets = [];
   throughputChart.update();
@@ -200,6 +202,23 @@ socket.on("test_started", (msg) => {
 
 socket.on("phase_started", (msg) => {
   log(`▶ Fase iniciada: ${msg.mode.toUpperCase()}`);
+});
+
+socket.on("metrics_update", (msg) => {
+  if (!metricsTable) return;
+  // Se for a primeira métrica, limpa o placeholder
+  const placeholder = metricsTable.querySelector("td[colspan]");
+  if (placeholder) {
+    metricsTable.removeChild(placeholder.parentElement);
+  }
+  const row = document.createElement("tr");
+  row.innerHTML = `
+      <td>${msg.interface}</td>
+      <td>${msg.mode}</td>
+      <td>${msg.ping} ms</td>
+      <td>${msg.jitter} ms</td>
+    `;
+  metricsTable.appendChild(row);
 });
 
 socket.on("throughput_update", (msg) => {

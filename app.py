@@ -192,12 +192,33 @@ def run_single_test(
         r"\[\s*(\d+|SUM)\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
     )
 
+    # Regex para capturar métricas iniciais (Ping/Jitter)
+    # Formato esperado: [METRICS] Ping: 15.20 ms | Jitter: 0.045 ms
+    metrics_pattern = re.compile(r"\[METRICS\] Ping: ([\d.]+) ms \| Jitter: ([\d.]+) ms")
+
     try:
         assert process.stdout is not None
         for line in process.stdout:
             line = line.strip()
             # Log para debug em tempo real no terminal do container
             print(f"[iperf3 raw] {interface}:{mode} -> {line}", flush=True)
+
+            # Checa se é linha de métrica
+            m_metrics = metrics_pattern.search(line)
+            if m_metrics:
+                ping_val = m_metrics.group(1)
+                jitter_val = m_metrics.group(2)
+                socketio.emit(
+                    "metrics_update",
+                    {
+                        "interface": interface,
+                        "mode": mode,
+                        "ping": ping_val,
+                        "jitter": jitter_val
+                    },
+                    room=sid,
+                )
+                continue
 
             match = line_pattern.search(line)
             if match:
@@ -293,11 +314,17 @@ def get_interfaces():
 def start_test(payload: dict):
     """Inicia testes simultâneos de acordo com interfaces e modo selecionados."""
 
-    # Verifica se já existem testes em andamento.
+    # Limpa testes anteriores forçadamente
     with TEST_LOCK:
         if ACTIVE_TESTS:
-            emit("test_error", {"message": "Já existem testes em andamento. Aguarde a conclusão."})
-            return
+            print(f"Parando {len(ACTIVE_TESTS)} testes ativos...", flush=True)
+            for tid, task in list(ACTIVE_TESTS.items()):
+                try:
+                    task.process.terminate()
+                    # Opcional: task.process.kill() se terminate não funcionar bem
+                except Exception as e:
+                    print(f"Erro ao parar teste {tid}: {e}", flush=True)
+            ACTIVE_TESTS.clear()
 
     error = validate_payload(payload)
     if error:

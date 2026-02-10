@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>iperf3 Multi-Interface</title>
+  <title>Teste de Desempenho de Rede - Multi-Interfaces</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -85,6 +85,25 @@
       </table>
 
       <button id="startBtn">Iniciar teste</button>
+    </section>
+
+    <section class="card">
+      <h2>Métricas Iniciais (Ping / Jitter)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Interface</th>
+            <th>Modo</th>
+            <th>Ping (Latência)</th>
+            <th>Jitter</th>
+          </tr>
+        </thead>
+        <tbody id="metricsTable">
+          <tr>
+            <td colspan="4" style="text-align:center; color:#64748b;">Inicie o teste para ver as métricas...</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section class="card">
