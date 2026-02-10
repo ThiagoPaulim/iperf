@@ -166,18 +166,24 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str, si
         ACTIVE_TESTS[task_id] = TestTask(interface=interface, mode=mode, process=process)
 
     final_mbps = 0.0
+    # Regex flexível para capturar a linha de throughput.
+    # Exemplo: [  5]   0.00-1.00   sec   128 MBytes  1.07 Gbits/sec
     line_pattern = re.compile(
-        r"\[\s*\d+\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+\S+Bytes\s+([\d.]+)\s+([KMG])bits/sec"
+        r"\[\s*\d+\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
     )
 
     try:
         assert process.stdout is not None
         for line in process.stdout:
             line = line.strip()
+            # Log para debug em tempo real no terminal do container
+            print(f"[iperf3 raw] {interface}:{mode} -> {line}", flush=True)
+
             match = line_pattern.search(line)
             if match:
-                raw = float(match.group(1))
-                unit = match.group(2)
+                # O grupo 1 é Bytes/MBytes (ignorado), grupo 2 é valor, grupo 3 é unidade.
+                raw = float(match.group(2))
+                unit = match.group(3)
                 mbps = round(parse_mbps(raw, unit), 2)
                 final_mbps = mbps
                 socketio.emit(

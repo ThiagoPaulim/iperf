@@ -106,7 +106,7 @@ fi
 
 # ---------- Execução do iperf3 ----------
 
-CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT")
+CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" --forceflush)
 if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi
