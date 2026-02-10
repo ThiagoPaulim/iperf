@@ -141,6 +141,14 @@ def validate_payload(payload: dict) -> Optional[str]:
     if base_port < 1 or base_port > 65535:
         return "Porta base deve estar entre 1 e 65535."
 
+    try:
+        parallel = int(payload.get("parallel", 4))
+    except (TypeError, ValueError):
+        return "Parallel deve ser numérico."
+
+    if parallel < 1 or parallel > 64:
+        return "Parallel deve estar entre 1 e 64."
+
     available = {item["name"] for item in list_interfaces()}
     for iface in payload["interfaces"]:
         if iface not in available:
@@ -149,11 +157,21 @@ def validate_payload(payload: dict) -> Optional[str]:
     return None
 
 
-def run_single_test(server_ip: str, duration: int, interface: str, mode: str, sid: str, port: int) -> None:
+def run_single_test(
+    server_ip: str, duration: int, interface: str, mode: str, sid: str, port: int, parallel: int
+) -> None:
     """Executa um único fluxo iperf e envia atualizações em tempo real."""
 
     task_id = f"{interface}:{mode}"
-    cmd = [str(RUNNER_SCRIPT), interface, server_ip, str(duration), mode, str(port)]
+    cmd = [
+        str(RUNNER_SCRIPT),
+        interface,
+        server_ip,
+        str(duration),
+        mode,
+        str(port),
+        str(parallel),
+    ]
 
     process = subprocess.Popen(
         cmd,
@@ -228,7 +246,12 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str, si
 
 
 def run_sequential_both(
-    server_ip: str, duration: int, interfaces: List[str], sid: str, base_port: int
+    server_ip: str,
+    duration: int,
+    interfaces: List[str],
+    sid: str,
+    base_port: int,
+    parallel: int,
 ) -> None:
     """Executa upload em todas as interfaces, espera, depois download."""
 
@@ -239,7 +262,7 @@ def run_sequential_both(
             port = base_port + idx
             t = threading.Thread(
                 target=run_single_test,
-                args=(server_ip, duration, iface, phase_mode, sid, port),
+                args=(server_ip, duration, iface, phase_mode, sid, port, parallel),
             )
             t.start()
             threads.append(t)
@@ -278,6 +301,7 @@ def start_test(payload: dict):
     duration = int(payload["duration"])
     interfaces = payload["interfaces"]
     base_port = int(payload.get("base_port", 5201))
+    parallel = int(payload.get("parallel", 4))
     selected_mode = payload["mode"]
 
     if selected_mode == "both_sequential":
@@ -292,7 +316,13 @@ def start_test(payload: dict):
     if selected_mode == "both_sequential":
         # Modo sequencial: upload em todas, espera, depois download em todas.
         socketio.start_background_task(
-            run_sequential_both, server_ip, duration, interfaces, sid, base_port
+            run_sequential_both,
+            server_ip,
+            duration,
+            interfaces,
+            sid,
+            base_port,
+            parallel,
         )
     else:
         # Modos simultâneos: todos os testes ao mesmo tempo.
@@ -301,7 +331,14 @@ def start_test(payload: dict):
             for mode in modes:
                 port = base_port + port_idx
                 socketio.start_background_task(
-                    run_single_test, server_ip, duration, iface, mode, sid, port
+                    run_single_test,
+                    server_ip,
+                    duration,
+                    iface,
+                    mode,
+                    sid,
+                    port,
+                    parallel,
                 )
                 port_idx += 1
 

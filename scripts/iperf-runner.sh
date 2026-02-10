@@ -3,10 +3,10 @@ set -euo pipefail
 
 # Script auxiliar para executar um fluxo iperf3 ligado a uma interface específica.
 # Cria policy routing temporário para garantir que o tráfego saia pela interface correta.
-# Uso: iperf-runner.sh <interface> <server_ip> <duration_s> <upload|download> <port>
+# Uso: iperf-runner.sh <interface> <server_ip> <duration_s> <upload|download> <port> <parallel>
 
-if [[ $# -ne 5 ]]; then
-  echo "Uso: $0 <interface> <server_ip> <duration_s> <upload|download> <port>" >&2
+if [[ $# -ne 6 ]]; then
+  echo "Uso: $0 <interface> <server_ip> <duration_s> <upload|download> <port> <parallel>" >&2
   exit 2
 fi
 
@@ -15,6 +15,7 @@ SERVER_IP="$2"
 DURATION="$3"
 MODE="$4"
 PORT="$5"
+PARALLEL="$6"
 
 # Validação básica para evitar entradas não previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -35,6 +36,10 @@ if [[ "$MODE" != "upload" && "$MODE" != "download" ]]; then
 fi
 if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
   echo "Porta inválida" >&2
+  exit 2
+fi
+if [[ ! "$PARALLEL" =~ ^[0-9]+$ ]]; then
+  echo "Parallel inválido" >&2
   exit 2
 fi
 
@@ -106,7 +111,9 @@ fi
 
 # ---------- Execução do iperf3 ----------
 
-CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" --forceflush)
+# Adicionamos -P (parallel) e --forceflush
+# Também adicionamos -w 1M (janela TCP) por padrão para ajudar performance
+CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -P "$PARALLEL" --forceflush)
 if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi

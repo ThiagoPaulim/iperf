@@ -170,6 +170,7 @@ startBtn.addEventListener("click", () => {
   const duration = Number(document.getElementById("duration").value);
   const mode = document.getElementById("mode").value;
   const basePort = Number(document.getElementById("basePort").value) || 5201;
+  const parallel = Number(document.getElementById("parallel").value) || 4;
   const interfaces = [...document.querySelectorAll(".iface-check:checked")].map((el) => el.value);
 
   // Limpa estado anterior.
@@ -179,13 +180,14 @@ startBtn.addEventListener("click", () => {
   throughputChart.update();
   latestThroughput.upload = {};
   latestThroughput.download = {};
-  log("Iniciando testes...");
+  log(`Iniciando testes com ${parallel} streams paralelas...`);
 
   socket.emit("start_test", {
     server_ip: serverIp,
     duration,
     mode,
     base_port: basePort,
+    parallel,
     interfaces,
   });
 });
