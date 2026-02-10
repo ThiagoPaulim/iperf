@@ -192,9 +192,9 @@ def run_single_test(
         r"\[\s*(\d+|SUM)\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
     )
 
-    # Regex para capturar métricas iniciais (Ping/Jitter)
-    # Formato esperado: [METRICS] Ping: 15.20 ms | Jitter: 0.045 ms
-    metrics_pattern = re.compile(r"\[METRICS\] Ping: ([\d.]+) ms \| Jitter: ([\d.]+) ms")
+    # Regex para capturar métricas iniciais (Ping)
+    # Formato esperado: [METRICS] Ping: 15.20 ms
+    metrics_pattern = re.compile(r"\[METRICS\] Ping: ([\d.]+) ms")
 
     try:
         assert process.stdout is not None
@@ -207,14 +207,12 @@ def run_single_test(
             m_metrics = metrics_pattern.search(line)
             if m_metrics:
                 ping_val = m_metrics.group(1)
-                jitter_val = m_metrics.group(2)
                 socketio.emit(
                     "metrics_update",
                     {
                         "interface": interface,
                         "mode": mode,
-                        "ping": ping_val,
-                        "jitter": jitter_val
+                        "ping": ping_val
                     },
                     room=sid,
                 )
@@ -230,7 +228,7 @@ def run_single_test(
                 if parallel == 1 and stream_id == "SUM":
                     continue
 
-                # O grupo 2 é Bytes/MBytes (ignorado), grupo 3 é valor, grupo 4 é unidade.
+                # O grupo 3 é valor, grupo 4 é unidade.
                 raw = float(match.group(3))
                 unit = match.group(4)
                 mbps = round(parse_mbps(raw, unit), 2)
@@ -321,12 +319,15 @@ def start_test(payload: dict):
             for tid, task in list(ACTIVE_TESTS.items()):
                 try:
                     task.process.terminate()
-                    # Opcional: task.process.kill() se terminate não funcionar bem
+                    # Espera o processo morrer de fato para garantir que o cleanup do shell script rodou
+                    task.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    print(f"Teste {tid} travou. Forçando kill...", flush=True)
+                    task.process.kill()
+                    task.process.wait()
                 except Exception as e:
                     print(f"Erro ao parar teste {tid}: {e}", flush=True)
             ACTIVE_TESTS.clear()
-            # Aguarda um pouco para o SO limpar recursos e scripts terminarem rodando cleanup
-            time.sleep(1)
 
     error = validate_payload(payload)
     if error:

@@ -216,7 +216,6 @@ socket.on("metrics_update", (msg) => {
       <td>${msg.interface}</td>
       <td>${msg.mode}</td>
       <td>${msg.ping} ms</td>
-      <td>${msg.jitter} ms</td>
     `;
   metricsTable.appendChild(row);
 });
