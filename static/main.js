@@ -42,6 +42,13 @@ function createGauge(ctx, label) {
 const uploadGauge = createGauge(uploadGaugeCtx, "Upload");
 const downloadGauge = createGauge(downloadGaugeCtx, "Download");
 
+// Armazena o último throughput reportado por cada interface/modo
+// para calcular a soma total (agregação).
+const latestThroughput = {
+  upload: {},   // { "eth0": 450, "eth1": 520 }
+  download: {}, // { "eth0": 320, "eth1": 410 }
+};
+
 function log(msg) {
   logBox.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
   logBox.scrollTop = logBox.scrollHeight;
@@ -66,6 +73,20 @@ function getDataset(label) {
     throughputChart.data.datasets.push(ds);
   }
   return ds;
+}
+
+/** Calcula a soma do throughput de todas as interfaces para um modo. */
+function sumThroughput(mode) {
+  const values = Object.values(latestThroughput[mode] || {});
+  return values.reduce((acc, val) => acc + val, 0);
+}
+
+/** Atualiza o gauge com a soma total de todas as interfaces. */
+function updateGauge(gauge, label, totalMbps) {
+  const rounded = Math.round(totalMbps * 100) / 100;
+  gauge.data.datasets[0].data = [rounded, Math.max(0, 1000 - rounded)];
+  gauge.options.plugins.title.text = `${label}: ${rounded} Mbits/s`;
+  gauge.update();
 }
 
 async function loadInterfaces() {
@@ -93,10 +114,13 @@ startBtn.addEventListener("click", () => {
   const mode = document.getElementById("mode").value;
   const interfaces = [...document.querySelectorAll(".iface-check:checked")].map((el) => el.value);
 
+  // Limpa estado anterior.
   resultsTable.innerHTML = "";
   throughputChart.data.labels = [];
   throughputChart.data.datasets = [];
   throughputChart.update();
+  latestThroughput.upload = {};
+  latestThroughput.download = {};
   log("Iniciando testes...");
 
   socket.emit("start_test", {
@@ -122,15 +146,17 @@ socket.on("throughput_update", (msg) => {
   dataset.data.push(msg.mbps);
   throughputChart.update();
 
+  // Atualiza o throughput individual desta interface/modo.
+  if (msg.mode === "upload" || msg.mode === "download") {
+    latestThroughput[msg.mode][msg.interface] = msg.mbps;
+  }
+
+  // Atualiza gauges com a SOMA de todas as interfaces.
   if (msg.mode === "upload") {
-    uploadGauge.data.datasets[0].data = [msg.mbps, Math.max(0, 1000 - msg.mbps)];
-    uploadGauge.options.plugins.title.text = `Upload: ${msg.mbps} Mbits/s`;
-    uploadGauge.update();
+    updateGauge(uploadGauge, "Upload (total)", sumThroughput("upload"));
   }
   if (msg.mode === "download") {
-    downloadGauge.data.datasets[0].data = [msg.mbps, Math.max(0, 1000 - msg.mbps)];
-    downloadGauge.options.plugins.title.text = `Download: ${msg.mbps} Mbits/s`;
-    downloadGauge.update();
+    updateGauge(downloadGauge, "Download (total)", sumThroughput("download"));
   }
 });
 

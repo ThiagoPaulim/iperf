@@ -21,7 +21,7 @@ RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 TEST_LOCK = threading.Lock()
 ACTIVE_TESTS: Dict[str, "TestTask"] = {}
@@ -67,9 +67,10 @@ def list_interfaces() -> List[dict]:
         if len(parts) < 2:
             continue
         name = parts[1].strip()
-        if name == "lo" or "@" in name:
-            # Ignora loopback e aliases virtuais no formato eth0@ifX.
+        # Remove o sufixo @ifX de interfaces virtuais (ex: eth0@if5 -> eth0).
+        if "@" in name:
             name = name.split("@", 1)[0]
+        # Ignora loopback.
         if name == "lo":
             continue
 
@@ -139,7 +140,7 @@ def validate_payload(payload: dict) -> Optional[str]:
     return None
 
 
-def run_single_test(server_ip: str, duration: int, interface: str, mode: str) -> None:
+def run_single_test(server_ip: str, duration: int, interface: str, mode: str, sid: str) -> None:
     """Executa um único fluxo iperf e envia atualizações em tempo real."""
 
     task_id = f"{interface}:{mode}"
@@ -179,6 +180,7 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str) ->
                         "mbps": mbps,
                         "timestamp": int(time.time()),
                     },
+                    room=sid,
                 )
 
         stderr_out = process.stderr.read().strip() if process.stderr else ""
@@ -192,6 +194,7 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str) ->
                     "success": True,
                     "final_mbps": final_mbps,
                 },
+                room=sid,
             )
         else:
             socketio.emit(
@@ -202,6 +205,7 @@ def run_single_test(server_ip: str, duration: int, interface: str, mode: str) ->
                     "success": False,
                     "error": stderr_out or "Falha ao executar iperf3.",
                 },
+                room=sid,
             )
     finally:
         with TEST_LOCK:
@@ -222,10 +226,18 @@ def get_interfaces():
 def start_test(payload: dict):
     """Inicia testes simultâneos de acordo com interfaces e modo selecionados."""
 
+    # Verifica se já existem testes em andamento.
+    with TEST_LOCK:
+        if ACTIVE_TESTS:
+            emit("test_error", {"message": "Já existem testes em andamento. Aguarde a conclusão."})
+            return
+
     error = validate_payload(payload)
     if error:
         emit("test_error", {"message": error})
         return
+
+    sid = request.sid
 
     server_ip = payload["server_ip"]
     duration = int(payload["duration"])
@@ -236,7 +248,7 @@ def start_test(payload: dict):
 
     for iface in interfaces:
         for mode in modes:
-            socketio.start_background_task(run_single_test, server_ip, duration, iface, mode)
+            socketio.start_background_task(run_single_test, server_ip, duration, iface, mode, sid)
 
 
 if __name__ == "__main__":
