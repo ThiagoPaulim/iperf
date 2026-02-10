@@ -70,8 +70,14 @@ fi
 
 # ---------- Policy routing ----------
 
-# Gera um table ID baseado no hash do nome da interface (100-250 range).
-TABLE_ID=$(( ( $(echo "$IFACE" | cksum | awk '{print $1}') % 150 ) + 100 ))
+# Gera um table ID baseado no hash MD5 do nome da interface para evitar colisões.
+# Usa range 2000-5000 para evitar conflitos com outras tabelas do sistema.
+HEX_HASH=$(echo -n "$IFACE" | md5sum | awk '{print $1}')
+SHORT_HEX=${HEX_HASH:0:5} # 5 hex digits
+DEC_VAL=$((16#$SHORT_HEX))
+TABLE_ID=$(( (DEC_VAL % 3000) + 2000 ))
+
+echo "DEBUG: Interface '$IFACE' -> Table ID: $TABLE_ID" >&2
 
 # Flag para controlar se criamos as regras (para cleanup).
 RULES_CREATED=0
