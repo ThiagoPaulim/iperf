@@ -12,6 +12,24 @@
 
 <body>
   <main class="container">
+    <div class="system-stats">
+      <div class="stat-item">
+        <span class="stat-label">CPU:</span>
+        <span id="cpuVal" class="stat-value">--%</span>
+        <div class="progress-bar">
+          <div id="cpuBar" class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">RAM:</span>
+        <span id="ramVal" class="stat-value">--%</span>
+        <div class="progress-bar">
+          <div id="ramBar" class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="stat-details" id="ramDetails">-- GB / -- GB</div>
+    </div>
+
     <h1>Teste de Desempenho de Rede (iperf3)</h1>
 
     <section class="card">

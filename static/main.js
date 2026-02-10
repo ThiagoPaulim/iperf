@@ -6,6 +6,13 @@ const logBox = document.getElementById("log");
 const startBtn = document.getElementById("startBtn");
 const gaugeContainer = document.getElementById("gaugeContainer");
 
+// Elementos da barra de status
+const cpuVal = document.getElementById("cpuVal");
+const cpuBar = document.getElementById("cpuBar");
+const ramVal = document.getElementById("ramVal");
+const ramBar = document.getElementById("ramBar");
+const ramDetails = document.getElementById("ramDetails");
+
 const throughputCtx = document.getElementById("throughputChart");
 
 const throughputChart = new Chart(throughputCtx, {
@@ -76,12 +83,6 @@ function getDataset(label) {
   return ds;
 }
 
-/** Calcula a soma do throughput de todas as interfaces para um modo. */
-function sumThroughput(mode) {
-  const values = Object.values(latestThroughput[mode] || {});
-  return values.reduce((acc, val) => acc + val, 0);
-}
-
 /** Cria os gauges dinâmicos para cada interface selecionada. */
 function createInterfaceGauges(interfaces, modes) {
   // Limpa gauges anteriores.
@@ -134,41 +135,7 @@ function createInterfaceGauges(interfaces, modes) {
     interfaceGauges[iface] = gauges;
   });
 
-  // Adiciona seção de totais se houver mais de 1 interface.
-  if (interfaces.length > 1) {
-    const totalWrapper = document.createElement("div");
-    totalWrapper.className = "interface-gauge-wrapper total-gauges";
-
-    const title = document.createElement("h3");
-    title.textContent = "TOTAL (soma)";
-    title.className = "gauge-iface-title total-title";
-    totalWrapper.appendChild(title);
-
-    const pairDiv = document.createElement("div");
-    pairDiv.className = "gauge-pair";
-
-    const totalGauges = {};
-
-    modes.forEach((mode) => {
-      const modeDiv = document.createElement("div");
-      modeDiv.className = "gauge-item";
-
-      const modeLabel = document.createElement("h4");
-      modeLabel.textContent = mode === "upload" ? "Upload Total" : "Download Total";
-      modeDiv.appendChild(modeLabel);
-
-      const canvas = document.createElement("canvas");
-      canvas.id = `gauge-total-${mode}`;
-      modeDiv.appendChild(canvas);
-
-      pairDiv.appendChild(modeDiv);
-      totalGauges[mode] = createGauge(canvas, `Total ${mode}`);
-    });
-
-    totalWrapper.appendChild(pairDiv);
-    gaugeContainer.appendChild(totalWrapper);
-    interfaceGauges["__total__"] = totalGauges;
-  }
+  // NOTA: A seção "TOTAL (soma)" foi removida conforme solicitado.
 }
 
 /** Atualiza um gauge específico. */
@@ -252,20 +219,6 @@ socket.on("throughput_update", (msg) => {
       msg.mbps
     );
   }
-
-  // Atualiza throughput agregado e gauge total.
-  if (msg.mode === "upload" || msg.mode === "download") {
-    latestThroughput[msg.mode][msg.interface] = msg.mbps;
-
-    if (interfaceGauges["__total__"] && interfaceGauges["__total__"][msg.mode]) {
-      const total = sumThroughput(msg.mode);
-      updateGauge(
-        interfaceGauges["__total__"][msg.mode],
-        `Total ${msg.mode}`,
-        total
-      );
-    }
-  }
 });
 
 socket.on("test_result", (msg) => {
@@ -279,6 +232,16 @@ socket.on("test_result", (msg) => {
 
 socket.on("test_error", (msg) => {
   log(`Erro: ${msg.message}`);
+});
+
+// Listener para monitoramento de sistema (CPU/RAM)
+socket.on("system_status", (msg) => {
+  cpuVal.textContent = `${msg.cpu}%`;
+  cpuBar.style.width = `${msg.cpu}%`;
+
+  ramVal.textContent = `${msg.ram_percent}%`;
+  ramBar.style.width = `${msg.ram_percent}%`;
+  ramDetails.textContent = `${msg.ram_used_gb} GB / ${msg.ram_total_gb} GB`;
 });
 
 loadInterfaces().catch((err) => log(`Falha ao carregar interfaces: ${err.message}`));

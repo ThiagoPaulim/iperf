@@ -9,6 +9,7 @@ import re
 import subprocess
 import threading
 import time
+import psutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -305,5 +306,23 @@ def start_test(payload: dict):
                 port_idx += 1
 
 
+def monitor_system():
+    """Monitora CPU e RAM globalmente e emite via socketio a cada 1s."""
+    while True:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        ram = psutil.virtual_memory()
+        socketio.emit(
+            "system_status",
+            {
+                "cpu": cpu_percent,
+                "ram_percent": ram.percent,
+                "ram_used_gb": round(ram.used / (1024**3), 2),
+                "ram_total_gb": round(ram.total / (1024**3), 2),
+            },
+        )
+
+
 if __name__ == "__main__":
+    # Inicia a thread de monitoramento em background
+    threading.Thread(target=monitor_system, daemon=True).start()
     socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)

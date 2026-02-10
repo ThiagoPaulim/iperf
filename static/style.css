@@ -20,6 +20,57 @@ body {
   gap: 16px;
 }
 
+/* ---------- System Stats Bar ---------- */
+.system-stats {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  background: #1e293b;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  font-size: 0.9rem;
+  margin-bottom: 10px;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stat-label {
+  color: #94a3b8;
+  font-weight: bold;
+}
+
+.stat-value {
+  color: #fff;
+  min-width: 40px;
+  text-align: right;
+}
+
+.progress-bar {
+  width: 100px;
+  height: 8px;
+  background: #0f172a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.stat-details {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
 .card {
   background: var(--card);
   border-radius: 12px;
@@ -157,6 +208,7 @@ pre {
   .form-grid {
     grid-template-columns: 1fr;
   }
+
   .gauge-container {
     grid-template-columns: 1fr;
   }
