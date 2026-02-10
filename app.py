@@ -328,6 +328,10 @@ def start_test(payload: dict):
                 except Exception as e:
                     print(f"Erro ao parar teste {tid}: {e}", flush=True)
             ACTIVE_TESTS.clear()
+            # Aguarda para o servidor remoto detectar a queda da conexão e liberar a porta (evita Server Busy)
+            print("Aguardando 3s para liberação de portas no servidor...", flush=True)
+            socketio.emit("test_error", {"message": "Reiniciando... Aguardando liberação de portas no servidor..."})
+            time.sleep(3)
 
     error = validate_payload(payload)
     if error:
