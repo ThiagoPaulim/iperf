@@ -87,72 +87,64 @@ fi
 # ---------- Policy routing (Isolamento de Interface) ----------
 
 # Usamos o ifindex da interface como base para o ID da tabela.
-# Isso garante que todos os fluxos da mesma interface usem a mesma tabela de roteamento,
-# o que é essencial para o modo 'both' (simultâneo) e estabilidade.
 IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
 TABLE_ID=$((IFINDEX + 1000))
 
 echo "DEBUG: Configurando Tabela $TABLE_ID para interface $IFACE (IP: $BIND_IP)" >&2
 
-# Limpeza de regras antigas apenas se não houver iperf rodando para este IP
-# Usamos uma prioridade específica para facilitar a limpeza
-# ip rule add from $BIND_IP table $TABLE_ID pref 1000
-
+# Função de limpeza segura
 cleanup() {
-  # IMPORTANTE: Em modo 'both' (simultâneo), temos 2 iperf-runner.sh rodando.
-  # Só limpamos a tabela/regras se formos o último processo para esta interface.
   local active_runners
-  active_runners=$(pgrep -f "iperf-runner.sh $IFACE" | wc -l)
+  # Fallback caso pgrep não esteja disponível (embora deva estar após o build)
+  if command -v pgrep >/dev/null; then
+    active_runners=$(pgrep -f "iperf-runner.sh $IFACE" | wc -l)
+  else
+    active_runners=$(ps aux | grep "iperf-runner.sh $IFACE" | grep -v grep | wc -l)
+  fi
+
   if [[ "$active_runners" -le 1 ]]; then
-    echo "DEBUG: Limpando regras de roteamento para $IFACE (Table $TABLE_ID)..." >&2
+    echo "DEBUG: Liberando interface $IFACE (Table $TABLE_ID)..." >&2
     ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
     ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
     ip route flush table "$TABLE_ID" 2>/dev/null || true
-  else
-    echo "DEBUG: Mantendo regras para $IFACE (outros testes ativos)..." >&2
   fi
 }
 trap cleanup EXIT
 
-# Garante regras limpas no início
+# Limpa estado anterior
 ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 ip route flush table "$TABLE_ID" 2>/dev/null || true
 
-# 1. Clonagem de Rotas da Tabela 'main' para a Tabela customizada
-# Copiamos todas as rotas que pertencem a esta interface para garantir que a
-# LAN local e o Gateway oficial funcionem dentro da tabela isolada.
-while read -r route; do
-    # Remove prefixos de outras tabelas para garantir inserção na nossa
-    clean_route=$(echo "$route" | sed 's/table [a-zA-Z0-9]\+//g')
-    ip route replace $clean_route table "$TABLE_ID" 2>/dev/null || true
-done < <(ip route show dev "$IFACE" table main)
+# 1. Rota para a Subrede Local (Essencial para ARP e comunicação local)
+if [[ -n "$SUBNET" ]]; then
+    # Adiciona a subrede como rota direta (link-local)
+    ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+fi
 
-# 2. Reforça o Gateway Padrão se encontrado
+# 2. Rota Default (Gateway)
 if [[ -n "$GATEWAY" ]]; then
-    ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+    echo "DEBUG: Usando Gateway $GATEWAY para $IFACE" >&2
+    ip route add default via "$GATEWAY" dev "$IFACE" src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+else
+    # Fallback caso o IP do servidor esteja em outra rede e não tenhamos gateway detectado
+    echo "DEBUG: Gateway não detectado. Forçando rota para o servidor via interface." >&2
+    ip route add "$SERVER_IP" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
-# 3. Fallback Crítico: Se não temos rota default nem rota específica para o servidor,
-# forçamos a saída pela interface (ARP direto).
-if ! ip route show table "$TABLE_ID" | grep -qE "default|$SERVER_IP"; then
-    echo "DEBUG: Forçando rota direta para $SERVER_IP via $IFACE" >&2
-    ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-fi
-
-# 4. Ativa as regras de Policy Routing (Prioridade 1000)
-# 'Qualquer pacote COM este IP de origem DEVE usar esta tabela'
+# 3. Regras de Política de Roteamento (Prioridade Máxima)
+# Com 'from BIND_IP', garantimos que qualquer pacote gerado pelo iperf (-B) use esta tabela.
+# Com 'oif IFACE', garantimos que pacotes de resposta do kernel também sigam a mesma lógica.
 ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
-# A regra 'oif' ajuda em casos onde o bind de IP não é suficiente para o Kernel.
 ip rule add oif "$IFACE" table "$TABLE_ID" pref 1001
 
-# Limpa cache do kernel para aplicar imediatamente
+# Força atualização do cache de rotas
 ip route flush cache 2>/dev/null || true
 
-# DEBUG FINAL: Mostra como ficou a tabela para diagnóstico
-echo "--- TABELA $TABLE_ID ($IFACE) ---" >&2
+# EXIBE TABELA PARA DEBUG (Nos logs do container)
+echo "--- CONFIGURAÇÃO FINAL Tabela $TABLE_ID ($IFACE) ---" >&2
 ip route show table "$TABLE_ID" >&2
-echo "---------------------------------" >&2
+echo "-----------------------------------------------------" >&2
 
 RULES_CREATED=1
 

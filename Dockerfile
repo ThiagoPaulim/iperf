@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     ethtool \
     net-tools \
     iputils-ping \
+    procps \
     gcc \
     libffi-dev \
     libssl-dev \
