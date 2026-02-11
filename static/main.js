@@ -23,6 +23,10 @@ const throughputCtx = document.getElementById("throughputChart");
 const interfaceGauges = {};
 const interfaceSpeeds = {};
 const latestThroughput = { upload: {}, download: {} };
+let testInProgress = false;
+let runStarted = false;
+let expectedResults = 0;
+let receivedResults = 0;
 
 function parseSpeed(speedStr) {
   if (!speedStr || speedStr === "N/A") return 1000;
@@ -315,6 +319,11 @@ if (configureServerCheck) {
 }
 
 startBtn.addEventListener("click", () => {
+  if (testInProgress) {
+    showToast("Aguarde o teste atual finalizar.", "error");
+    return;
+  }
+
   const serverIp = document.getElementById("serverIp").value.trim();
   const duration = Number(document.getElementById("duration").value);
   const mode = document.getElementById("mode").value;
@@ -349,6 +358,12 @@ startBtn.addEventListener("click", () => {
   throughputChart.update();
   latestThroughput.upload = {};
   latestThroughput.download = {};
+  testInProgress = true;
+  runStarted = false;
+  expectedResults = 0;
+  receivedResults = 0;
+  startBtn.disabled = true;
+  startBtn.textContent = "Teste em andamento...";
 
   log(`Iniciando testes com ${parallel} streams paralelas...`);
   if (configureServer) {
@@ -371,6 +386,9 @@ startBtn.addEventListener("click", () => {
 });
 
 socket.on("test_started", (msg) => {
+  runStarted = true;
+  expectedResults = (msg.interfaces?.length || 0) * (msg.modes?.length || 0);
+  receivedResults = 0;
   showToast(`Teste iniciado! Interfaces: ${msg.interfaces.join(", ")}`, "success");
   log(`Testes iniciados para interfaces: ${msg.interfaces.join(", ")}. Modos: ${msg.modes.join(", ")}`);
   createInterfaceGauges(msg.interfaces, msg.modes);
@@ -379,6 +397,11 @@ socket.on("test_started", (msg) => {
 socket.on("test_error", (msg) => {
   showToast(msg.message, "error");
   log(`Erro: ${msg.message}`);
+  if (!runStarted) {
+    testInProgress = false;
+    startBtn.disabled = false;
+    startBtn.textContent = "Iniciar teste";
+  }
 });
 
 socket.on("phase_started", (msg) => {
@@ -427,6 +450,17 @@ socket.on("test_result", (msg) => {
   row.innerHTML = `<td>${msg.interface}</td><td>${msg.mode}</td><td>${status}</td><td>${result}</td>`;
   resultsTable.appendChild(row);
   log(`Finalizado: ${msg.interface} ${msg.mode} -> ${result}`);
+
+  if (runStarted) {
+    receivedResults += 1;
+    if (expectedResults > 0 && receivedResults >= expectedResults) {
+      testInProgress = false;
+      runStarted = false;
+      startBtn.disabled = false;
+      startBtn.textContent = "Iniciar teste";
+      log("Ciclo de testes finalizado.");
+    }
+  }
 });
 
 socket.on("system_status", (msg) => {

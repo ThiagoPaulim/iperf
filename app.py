@@ -239,7 +239,7 @@ def run_single_test(
 ) -> None:
     """Executa um Ãºnico fluxo iperf e envia atualizaÃ§Ãµes em tempo real."""
 
-    task_id = f"{interface}:{mode}"
+    task_id = f"{sid}:{interface}:{mode}:{port}:{time.time_ns()}"
     cmd = [
         str(RUNNER_SCRIPT),
         interface,
