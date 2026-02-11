@@ -54,6 +54,27 @@ fi
 # Obtém a subnet/prefixo da interface.
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
+# ---------- Tuning de Sysctl para Multi-Homing ----------
+# Essencial para impedir que o tráfego "vaze" para a interface errada (eth0)
+# se ambas estiverem na mesma subnet ou compartilharem o mesmo gateway.
+
+echo "Aplicando sysctl tunings para $IFACE..."
+
+# ARP Ignore = 1: Responder ARP apenas se o IP alvo estiver configurado NA interface de entrada.
+sysctl -w net.ipv4.conf.all.arp_ignore=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".arp_ignore=1 >/dev/null 2>&1 || true
+
+# ARP Announce = 2: Usar o melhor endereço local para anunciar nesta interface.
+sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".arp_announce=2 >/dev/null 2>&1 || true
+
+# RP Buffer = 0 ou 2: Permitir roteamento assimétrico se necessário, mas respeitando as tabelas.
+# 2 (Loose mode) é geralmente mais seguro para multi-wan.
+sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".rp_filter=2 >/dev/null 2>&1 || true
+
+# --------------------------------------------------------
+
 # Tenta descobrir o gateway da interface.
 # Tenta descobrir o gateway da interface.
 # 1. Rota default específica da interface
