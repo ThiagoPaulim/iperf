@@ -56,6 +56,17 @@ EXCLUDED_IFACE_PREFIXES = (
 ALLOW_VIRTUAL_INTERFACES = os.environ.get("ALLOW_VIRTUAL_INTERFACES", "1") == "1"
 
 
+def get_runner_revision() -> str:
+    try:
+        content = RUNNER_SCRIPT.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return "unknown"
+    match = re.search(r'RUNNER_REV="([^"]+)"', content)
+    if match:
+        return match.group(1)
+    return "unknown"
+
+
 @dataclass
 class TestTask:
     """Representa uma execuÃ§Ã£o iperf em uma interface/modo."""
@@ -307,6 +318,22 @@ def parse_mbps(value: float, unit: str) -> float:
     return value
 
 
+def is_transient_iperf_error(text: str) -> bool:
+    """Detecta falhas transitórias que valem uma retentativa curta."""
+
+    t = (text or "").lower()
+    transient_patterns = (
+        "unable to connect to server",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "server is busy",
+        "resource temporarily unavailable",
+        "temporary failure",
+    )
+    return any(p in t for p in transient_patterns)
+
+
 def should_skip_interface(raw_name: str, flags: List[str]) -> bool:
     """Filtra interfaces virtuais/de infra para listar apenas candidatas reais."""
 
@@ -454,6 +481,7 @@ def run_single_test(
     run_id: str,
     port: int,
     parallel: int,
+    retry_left: int = 1,
 ) -> None:
     """Executa um Ãºnico fluxo iperf e envia atualizaÃ§Ãµes em tempo real."""
 
@@ -584,6 +612,33 @@ def run_single_test(
             )
         else:
             error_tail = " | ".join([item for item in list(recent_lines)[-10:] if item])
+            if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
+                emit_run_event(
+                    "test_error",
+                    {
+                        "message": (
+                            f"Falha transitoria em {interface} ({mode}) na porta {port}. "
+                            "Retentando automaticamente..."
+                        ),
+                        "fatal": False,
+                    },
+                    sid,
+                    run_id,
+                )
+                reset_policy_state(interface)
+                time.sleep(0.7)
+                run_single_test(
+                    server_ip,
+                    duration,
+                    interface,
+                    mode,
+                    sid,
+                    run_id,
+                    port,
+                    parallel,
+                    retry_left=retry_left - 1,
+                )
+                return
             emit_run_event(
                 "test_result",
                 {
@@ -943,7 +998,12 @@ def start_test(payload: dict):
     else:
         modes = [selected_mode]
 
-    emit_run_event("test_started", {"interfaces": interfaces, "modes": modes}, sid, run_id)
+    emit_run_event(
+        "test_started",
+        {"interfaces": interfaces, "modes": modes, "runner_rev": get_runner_revision()},
+        sid,
+        run_id,
+    )
 
     if configure_server:
         monitor_stop = threading.Event()

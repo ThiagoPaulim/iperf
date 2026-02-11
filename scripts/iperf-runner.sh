@@ -16,8 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r8"
-ENABLE_NIC_TUNING="${ENABLE_NIC_TUNING:-0}"
+RUNNER_REV="2026-02-11-r10"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 
@@ -61,23 +60,8 @@ SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 echo "Iniciando runner na interface $IFACE... (rev: $RUNNER_REV)" >&2
 
 # ---------- Tunings de hardware (NIC) ----------
-# Desativado por padrao para evitar erros em ambientes com /sys read-only.
-# Ative explicitamente com ENABLE_NIC_TUNING=1 se precisar.
-if [[ "$ENABLE_NIC_TUNING" == "1" ]]; then
-  echo "Aplicando tunings de NIC em $IFACE..." >&2
-  ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
-  ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
-  RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
-  if [[ -e "$RPS_FILE" ]]; then
-    if [[ -w "$RPS_FILE" ]]; then
-      echo "f" > "$RPS_FILE" 2>/dev/null || true
-    else
-      echo "RPS nao gravavel em $RPS_FILE (provavel /sys read-only). Pulando ajuste." >&2
-    fi
-  fi
-else
-  echo "Tunings de NIC desativados (ENABLE_NIC_TUNING=0)." >&2
-fi
+# Desativado de forma definitiva para eliminar erros em /sys read-only.
+echo "Tunings de NIC desativados (fixo)." >&2
 
 # ---------- Policy routing por interface (opcional) ----------
 
@@ -112,8 +96,11 @@ cleanup() {
   if [[ "$active_count" -le 0 ]]; then
     rm -f "$COUNT_FILE"
     echo "DEBUG: Restaurando estado original de $IFACE..." >&2
+    BEFORE_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
+    AFTER_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    echo "DEBUG: policy cleanup iface=$IFACE pref=$RULE_PREF_FROM rules_before=$BEFORE_RULES rules_after=$AFTER_RULES table=$TABLE_ID" >&2
   else
     echo "$active_count" > "$COUNT_FILE"
   fi
@@ -139,9 +126,12 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
 
   # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
   if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
+    BEFORE_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
     ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
+    AFTER_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    echo "DEBUG: policy setup iface=$IFACE pref=$RULE_PREF_FROM rules_before=$BEFORE_RULES rules_after=$AFTER_RULES table=$TABLE_ID src=$BIND_IP" >&2
   fi
 
   # Monta rotas na tabela dedicada.
