@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -889,6 +889,11 @@ def index_v2():
     return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
 
 
+@app.route("/version", methods=["GET"])
+def get_version_alias():
+    return jsonify({"app_rev": APP_REV, "runner_rev": get_runner_revision(), "flow_retries": FLOW_RETRIES})
+
+
 @app.after_request
 def add_no_cache_headers(response):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -905,6 +910,14 @@ def get_version():
 @app.route("/api/interfaces", methods=["GET"])
 def get_interfaces():
     return jsonify({"interfaces": list_interfaces()})
+
+
+@app.route("/<path:path>", methods=["GET"])
+def index_fallback(path: str):
+    # Mantem /api e /static com comportamento normal de 404 quando inexistentes.
+    if path.startswith("api/") or path.startswith("static/"):
+        abort(404)
+    return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
 
 
 @socketio.on("disconnect")
@@ -1113,5 +1126,9 @@ def monitor_system():
 if __name__ == "__main__":
     # Inicia a thread de monitoramento em background
     threading.Thread(target=monitor_system, daemon=True).start()
+    print(
+        f"Startup: APP_REV={APP_REV} RUNNER_REV={get_runner_revision()} FLOW_RETRIES={FLOW_RETRIES}",
+        flush=True,
+    )
     socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
 
