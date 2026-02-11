@@ -6,6 +6,8 @@ const resultsTable = document.getElementById("resultsTable");
 const metricsTable = document.getElementById("metricsTable");
 const logBox = document.getElementById("log");
 const startBtn = document.getElementById("startBtn");
+const selectAllBtn = document.getElementById("selectAllBtn");
+const clearAllBtn = document.getElementById("clearAllBtn");
 const gaugeContainer = document.getElementById("gaugeContainer");
 const cpuVal = document.getElementById("cpuVal");
 const cpuBar = document.getElementById("cpuBar");
@@ -29,9 +31,10 @@ let expectedResults = 0;
 let receivedResults = 0;
 let currentRunId = null;
 let awaitingRunAck = false;
+let runAckTimeout = null;
 
 function isCurrentRunMessage(msg) {
-  if (!msg || !Object.prototype.hasOwnProperty.call(msg, "run_id")) return true;
+  if (!msg || !Object.prototype.hasOwnProperty.call(msg, "run_id")) return false;
   if (!currentRunId) return false;
   return msg.run_id === currentRunId;
 }
@@ -55,6 +58,19 @@ function resetRemoteSystemStats() {
   remoteRamVal.textContent = "N/A";
   remoteRamBar.style.width = "0%";
   remoteRamDetails.textContent = "N/A";
+}
+
+function setAllInterfacesChecked(checked) {
+  document.querySelectorAll(".iface-check").forEach((el) => {
+    el.checked = checked;
+  });
+}
+
+function clearRunAckTimeout() {
+  if (runAckTimeout) {
+    clearTimeout(runAckTimeout);
+    runAckTimeout = null;
+  }
 }
 
 // ConfiguraÃ§Ã£o do GrÃ¡fico de Linha (Throughput)
@@ -326,6 +342,22 @@ if (configureServerCheck) {
   });
 }
 
+async function loadVersion() {
+  const response = await fetch("/api/version");
+  const data = await response.json();
+  if (data?.app_rev || data?.runner_rev) {
+    log(`Versao backend: ${data.app_rev || "?"} | Runner: ${data.runner_rev || "?"}`);
+  }
+}
+
+if (selectAllBtn) {
+  selectAllBtn.addEventListener("click", () => setAllInterfacesChecked(true));
+}
+
+if (clearAllBtn) {
+  clearAllBtn.addEventListener("click", () => setAllInterfacesChecked(false));
+}
+
 startBtn.addEventListener("click", () => {
   if (testInProgress) {
     showToast("Aguarde o teste atual finalizar.", "error");
@@ -372,6 +404,16 @@ startBtn.addEventListener("click", () => {
   receivedResults = 0;
   currentRunId = null;
   awaitingRunAck = true;
+  clearRunAckTimeout();
+  runAckTimeout = setTimeout(() => {
+    if (!awaitingRunAck || !testInProgress) return;
+    testInProgress = false;
+    awaitingRunAck = false;
+    startBtn.disabled = false;
+    startBtn.textContent = "Iniciar teste";
+    showToast("Sem resposta do backend. Atualize a pagina com Ctrl+F5.", "error");
+    log("Sem run_ack do backend em 5s. Possivel cache antigo ou servico desatualizado.");
+  }, 5000);
   startBtn.disabled = true;
   startBtn.textContent = "Teste em andamento...";
 
@@ -397,14 +439,17 @@ startBtn.addEventListener("click", () => {
 
 socket.on("run_ack", (msg) => {
   if (!testInProgress) return;
+  if (!msg || !msg.run_id) return;
   currentRunId = msg.run_id || currentRunId;
   awaitingRunAck = false;
+  clearRunAckTimeout();
 });
 
 socket.on("test_started", (msg) => {
   if (awaitingRunAck && !currentRunId && msg.run_id) {
     currentRunId = msg.run_id;
     awaitingRunAck = false;
+    clearRunAckTimeout();
   }
   if (!isCurrentRunMessage(msg)) return;
   currentRunId = msg.run_id || currentRunId;
@@ -426,6 +471,7 @@ socket.on("test_error", (msg) => {
   if (awaitingRunAck && !currentRunId && msg.run_id) {
     currentRunId = msg.run_id;
     awaitingRunAck = false;
+    clearRunAckTimeout();
   }
   if (!isCurrentRunMessage(msg)) return;
   const fatal = msg.fatal !== false;
@@ -434,6 +480,7 @@ socket.on("test_error", (msg) => {
   if (fatal && !runStarted) {
     testInProgress = false;
     awaitingRunAck = false;
+    clearRunAckTimeout();
     startBtn.disabled = false;
     startBtn.textContent = "Iniciar teste";
   }
@@ -496,6 +543,7 @@ socket.on("test_result", (msg) => {
       testInProgress = false;
       runStarted = false;
       awaitingRunAck = false;
+      clearRunAckTimeout();
       startBtn.disabled = false;
       startBtn.textContent = "Iniciar teste";
       log("Ciclo de testes finalizado.");
@@ -542,6 +590,7 @@ socket.on("remote_system_status", (msg) => {
 });
 
 resetRemoteSystemStats();
+loadVersion().catch((err) => log(`Falha ao carregar versao: ${err.message}`));
 loadInterfaces().catch((err) => log(`Falha ao carregar interfaces: ${err.message}`));
 
 

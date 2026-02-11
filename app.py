@@ -23,6 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
+APP_REV = "2026-02-11-r10a"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -878,6 +879,19 @@ def index():
     return render_template("index.html")
 
 
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.route("/api/version", methods=["GET"])
+def get_version():
+    return jsonify({"app_rev": APP_REV, "runner_rev": get_runner_revision(), "flow_retries": FLOW_RETRIES})
+
+
 @app.route("/api/interfaces", methods=["GET"])
 def get_interfaces():
     return jsonify({"interfaces": list_interfaces()})
@@ -900,15 +914,14 @@ def start_test(payload: dict):
 
     sid = request.sid
     stop_remote_monitor(sid)
-
-    error = validate_payload(payload)
-    if error:
-        emit("test_error", {"message": error})
-        return
-
     run_id = f"{int(time.time() * 1000)}-{os.urandom(3).hex()}"
     set_run_id(sid, run_id)
     emit_run_event("run_ack", {"status": "accepted"}, sid, run_id)
+
+    error = validate_payload(payload)
+    if error:
+        emit_run_event("test_error", {"message": error}, sid, run_id)
+        return
 
     # Verifica configuraÃ§Ã£o remota opcional
     configure_server = bool(payload.get("configure_server", False))
