@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r10"
+RUNNER_REV="2026-02-11-r11"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 
@@ -162,7 +162,7 @@ fi
 
 # ---------- Metricas iniciais (ping) ----------
 echo "Coletando metricas..." >&2
-PING_AVG=$(ping -4 -c 3 -i 0.2 -W 1 -I "$BIND_IP" "$SERVER_IP" | tail -1 | awk -F '/' '{print $5}' 2>/dev/null || echo "0")
+PING_AVG=$(ping -4 -c 3 -i 0.2 -W 1 -I "$BIND_IP" "$SERVER_IP" | tail -1 | awk -F '/' '{print $5}' 2>/dev/null || echo "N/A")
 echo "[METRICS] Ping: $PING_AVG ms"
 
 # ---------- Execucao do iperf3 ----------
@@ -174,6 +174,32 @@ if [[ "$ROUTE_DEBUG" == "Erro ao verificar rota final" || "$ROUTE_DEBUG" == *"un
 fi
 if [[ "$ENABLE_POLICY_ROUTING" == "1" && "$ROUTE_DEBUG" != *" dev $IFACE "* ]]; then
   echo "Rota final nao saiu por $IFACE: $ROUTE_DEBUG" >&2
+  exit 1
+fi
+
+# ---------- Preflight TCP ----------
+# Verifica rapidamente se a porta remota responde a partir do IP da interface.
+PRECHECK_OK=0
+for attempt in 1 2 3; do
+  if python - "$BIND_IP" "$SERVER_IP" "$PORT" <<'PY'
+import socket, sys
+bind_ip, server_ip, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(2.0)
+s.bind((bind_ip, 0))
+s.connect((server_ip, port))
+s.close()
+print("ok")
+PY
+  then
+    PRECHECK_OK=1
+    break
+  fi
+  sleep 0.4
+done
+
+if [[ "$PRECHECK_OK" -ne 1 ]]; then
+  echo "Precheck TCP falhou para $SERVER_IP:$PORT a partir de $BIND_IP ($IFACE)." >&2
   exit 1
 fi
 
@@ -208,11 +234,11 @@ fi
 
 # Evita travamentos longos de conexao em interfaces sem alcance.
 if iperf3 --help 2>&1 | grep -q -- "--connect-timeout"; then
-  CMD+=( --connect-timeout 5000 )
+  CMD+=( --connect-timeout 3000 )
 fi
 
 echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2
-RUN_TIMEOUT=$((DURATION + 25))
+RUN_TIMEOUT=$((DURATION + 12))
 if command -v timeout >/dev/null 2>&1; then
   timeout --foreground --signal=TERM "$RUN_TIMEOUT" "${CMD[@]}"
 else

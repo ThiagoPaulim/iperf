@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-11-r10c"
+APP_REV = "2026-02-11-r10d"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -818,12 +818,25 @@ def monitor_remote_system(
     try:
         client.connect(ip, username=user, password=password, timeout=5)
         while not stop_event.is_set() and time.time() < deadline_ts and is_current_run(sid, run_id):
-            stdin, stdout, stderr = client.exec_command(cmd, timeout=4)
+            try:
+                stdin, stdout, stderr = client.exec_command(cmd, timeout=4)
+            except Exception:
+                # Reabre sessao SSH em falhas transitórias de canal.
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                time.sleep(1)
+                try:
+                    client.connect(ip, username=user, password=password, timeout=5)
+                except Exception:
+                    time.sleep(1)
+                continue
             _ = stdin
             err = stderr.read().decode(errors="ignore").strip()
             out_lines = stdout.read().decode(errors="ignore").strip().splitlines()
             if err or len(out_lines) < 2:
-                time.sleep(1)
+                time.sleep(2)
                 continue
 
             try:
@@ -860,7 +873,7 @@ def monitor_remote_system(
                 sid,
                 run_id,
             )
-            time.sleep(1)
+            time.sleep(2)
     except Exception as exc:
         if is_current_run(sid, run_id):
             emit_run_event(
@@ -924,11 +937,9 @@ def index_fallback(path: str):
 def on_disconnect():
     sid = request.sid
     stop_remote_monitor(sid)
-    stopped = stop_active_tests_for_sid(sid)
-    with RUN_STATE_LOCK:
-        RUN_STATE.pop(sid, None)
-    if stopped > 0:
-        print(f"Disconnect {sid}: encerrados {stopped} teste(s) ativos.", flush=True)
+    # Nao encerra testes em andamento aqui: desconexoes curtas do websocket
+    # podem ocorrer durante carga alta e nao devem interromper o teste.
+    print(f"Disconnect {sid}: websocket desconectado, testes continuam.", flush=True)
 
 
 @socketio.on("start_test")
