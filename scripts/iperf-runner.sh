@@ -65,69 +65,69 @@ ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
 # Garante que as interrupcoes de hardware nao fiquem presas em um so core (RPS).
 echo "f" > "/sys/class/net/$IFACE/queues/rx-0/rps_cpus" 2>/dev/null || true
 
-# ---------- Policy routing vs VRF (fallback) ----------
+# ---------- Policy routing por interface ----------
 
 IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
 TABLE_ID=$((IFINDEX + 1000))
-# Nome da VRF encurtado para evitar erro de validacao (limite de 15 chars no kernel).
-VRF_NAME="v$IFINDEX"
+RULE_PREF_FROM=$((20000 + IFINDEX))
+RULE_PREF_OIF=$((30000 + IFINDEX))
+LOCK_FILE="/tmp/iperf-runner-${IFACE}.lock"
+COUNT_FILE="/tmp/iperf-runner-${IFACE}.count"
 
-# Tentativa de isolamento via VRF (metodo mais robusto).
-USE_VRF=0
-if ip link add "$VRF_NAME" type vrf table "$TABLE_ID" 2>/dev/null; then
-  ip link set "$VRF_NAME" up 2>/dev/null
-  if ip link set dev "$IFACE" master "$VRF_NAME" 2>/dev/null; then
-    USE_VRF=1
-    echo "DEBUG: Ativado isolamento via VRF $VRF_NAME" >&2
-  else
-    ip link del "$VRF_NAME" 2>/dev/null || true
-  fi
+exec 9>"$LOCK_FILE"
+flock 9
+ACTIVE_COUNT=0
+if [[ -f "$COUNT_FILE" ]]; then
+  ACTIVE_COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
 fi
+ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
+echo "$ACTIVE_COUNT" > "$COUNT_FILE"
+flock -u 9
 
-if [[ "$USE_VRF" -eq 0 ]]; then
-  echo "DEBUG: VRF falhou. Usando policy routing." >&2
-  RULE_PREF_FROM=$((20000 + IFINDEX))
-  RULE_PREF_OIF=$((30000 + IFINDEX))
-  ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-  ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+# Evita recriar regras a cada fluxo e reduz interferencia entre uploads/downloads simultaneos.
+if ! ip rule show | grep -q "^${RULE_PREF_FROM}:"; then
   ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM"
+fi
+if ! ip rule show | grep -q "^${RULE_PREF_OIF}:"; then
   ip rule add oif "$IFACE" table "$TABLE_ID" pref "$RULE_PREF_OIF"
 fi
 
 cleanup() {
-  local active_runners
-  if command -v pgrep >/dev/null; then
-    active_runners=$(pgrep -f "iperf-runner.sh $IFACE" | wc -l)
-  else
-    active_runners=$(ps aux | grep "iperf-runner.sh $IFACE" | grep -v grep | wc -l)
+  flock 9
+  local active_count
+  active_count=0
+  if [[ -f "$COUNT_FILE" ]]; then
+    active_count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+  fi
+  if [[ "$active_count" -gt 0 ]]; then
+    active_count=$((active_count - 1))
   fi
 
-  if [[ "$active_runners" -le 1 ]]; then
+  if [[ "$active_count" -le 0 ]]; then
+    rm -f "$COUNT_FILE"
     echo "DEBUG: Restaurando estado original de $IFACE..." >&2
-    if [[ "$USE_VRF" -eq 1 ]]; then
-      ip link set dev "$IFACE" nomaster 2>/dev/null || true
-      ip link del "$VRF_NAME" 2>/dev/null || true
-    fi
-    ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-    ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+    ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
+    ip rule del pref "$RULE_PREF_OIF" 2>/dev/null || true
     ip route flush table "$TABLE_ID" 2>/dev/null || true
+  else
+    echo "$active_count" > "$COUNT_FILE"
   fi
+  flock -u 9
 }
 trap cleanup EXIT
 
-# Monta rotas na tabela dedicada (seja VRF ou tabela manual).
-ip route flush table "$TABLE_ID" 2>/dev/null || true
+# Monta rotas na tabela dedicada.
 GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
 [[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
 
 if [[ -n "$SUBNET" ]]; then
-  ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  ip route replace "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
 if [[ -n "$GATEWAY" ]]; then
-  ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 else
-  ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 fi
 
 # ---------- Tunings de alta performance (rede) ----------
@@ -148,11 +148,7 @@ echo "DEBUG_ROUTE: $ROUTE_DEBUG" >&2
 NUM_CPUS=$(nproc)
 CORE_ID=$(( (IFINDEX + PORT) % NUM_CPUS ))
 
-# Prefixamos com ip vrf exec quando VRF ativa.
 EXEC_PREFIX=(taskset -c "$CORE_ID")
-if [[ "$USE_VRF" -eq 1 ]]; then
-  EXEC_PREFIX+=(ip vrf exec "$VRF_NAME")
-fi
 
 # --bind-dev reduz ambiguidade de roteamento quando ha interfaces em sub-redes similares.
 BIND_DEV_ARGS=()
@@ -178,5 +174,5 @@ if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi
 
-echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (VRF: $USE_VRF)" >&2
+echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2
 "${CMD[@]}"
