@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r7"
+RUNNER_REV="2026-02-11-r8"
 ENABLE_NIC_TUNING="${ENABLE_NIC_TUNING:-0}"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
@@ -69,7 +69,11 @@ if [[ "$ENABLE_NIC_TUNING" == "1" ]]; then
   ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
   RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
   if [[ -e "$RPS_FILE" ]]; then
-    printf "f\n" | tee "$RPS_FILE" >/dev/null 2>/dev/null || true
+    if [[ -w "$RPS_FILE" ]]; then
+      echo "f" > "$RPS_FILE" 2>/dev/null || true
+    else
+      echo "RPS nao gravavel em $RPS_FILE (provavel /sys read-only). Pulando ajuste." >&2
+    fi
   fi
 else
   echo "Tunings de NIC desativados (ENABLE_NIC_TUNING=0)." >&2

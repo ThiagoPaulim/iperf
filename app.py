@@ -467,6 +467,12 @@ def run_single_test(
         str(port),
         str(parallel),
     ]
+    runner_env = os.environ.copy()
+    # Blindagem: evita tunings em /sys (read-only em varios ambientes/container).
+    runner_env["ENABLE_NIC_TUNING"] = "0"
+    # Mantem comportamento estavel de rede por processo.
+    runner_env.setdefault("ENABLE_SYSCTL_TUNING", "0")
+    runner_env.setdefault("ENABLE_POLICY_ROUTING", "1")
 
     process: Optional[subprocess.Popen] = None
 
@@ -494,6 +500,7 @@ def run_single_test(
             text=True,
             bufsize=1,
             start_new_session=True,
+            env=runner_env,
         )
 
         with TEST_LOCK:
