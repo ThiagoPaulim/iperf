@@ -12,6 +12,11 @@ const cpuBar = document.getElementById("cpuBar");
 const ramVal = document.getElementById("ramVal");
 const ramBar = document.getElementById("ramBar");
 const ramDetails = document.getElementById("ramDetails");
+const remoteCpuVal = document.getElementById("remoteCpuVal");
+const remoteCpuBar = document.getElementById("remoteCpuBar");
+const remoteRamVal = document.getElementById("remoteRamVal");
+const remoteRamBar = document.getElementById("remoteRamBar");
+const remoteRamDetails = document.getElementById("remoteRamDetails");
 const throughputCtx = document.getElementById("throughputChart");
 
 // Variáveis Globais
@@ -29,6 +34,15 @@ function parseSpeed(speedStr) {
 function log(msg) {
   logBox.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
   logBox.scrollTop = logBox.scrollHeight;
+}
+
+function resetRemoteSystemStats() {
+  if (!remoteCpuVal || !remoteCpuBar || !remoteRamVal || !remoteRamBar || !remoteRamDetails) return;
+  remoteCpuVal.textContent = "N/A";
+  remoteCpuBar.style.width = "0%";
+  remoteRamVal.textContent = "N/A";
+  remoteRamBar.style.width = "0%";
+  remoteRamDetails.textContent = "N/A";
 }
 
 // Configuração do Gráfico de Linha (Throughput)
@@ -339,6 +353,8 @@ startBtn.addEventListener("click", () => {
   log(`Iniciando testes com ${parallel} streams paralelas...`);
   if (configureServer) {
     log(`Configuração remota via SSH ativada.`);
+  } else {
+    resetRemoteSystemStats();
   }
 
   socket.emit("start_test", {
@@ -422,4 +438,33 @@ socket.on("system_status", (msg) => {
   ramDetails.textContent = `${msg.ram_used_gb} GB / ${msg.ram_total_gb} GB`;
 });
 
+socket.on("remote_system_status", (msg) => {
+  if (!remoteCpuVal || !remoteCpuBar || !remoteRamVal || !remoteRamBar || !remoteRamDetails) return;
+
+  if (msg.disabled) {
+    resetRemoteSystemStats();
+    return;
+  }
+
+  if (msg.error) {
+    log(`Erro monitor remoto: ${msg.error}`);
+    return;
+  }
+
+  if (typeof msg.cpu === "number") {
+    remoteCpuVal.textContent = `${msg.cpu}%`;
+    remoteCpuBar.style.width = `${msg.cpu}%`;
+  }
+
+  if (typeof msg.ram_percent === "number") {
+    remoteRamVal.textContent = `${msg.ram_percent}%`;
+    remoteRamBar.style.width = `${msg.ram_percent}%`;
+  }
+
+  if (typeof msg.ram_used_gb === "number" && typeof msg.ram_total_gb === "number") {
+    remoteRamDetails.textContent = `${msg.ram_used_gb} GB / ${msg.ram_total_gb} GB`;
+  }
+});
+
+resetRemoteSystemStats();
 loadInterfaces().catch((err) => log(`Falha ao carregar interfaces: ${err.message}`));

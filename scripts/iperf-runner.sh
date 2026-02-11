@@ -63,7 +63,10 @@ ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
 # Desabilita o Adaptive-RX para reduzir jitter em testes de throughput.
 ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
 # Garante que as interrupcoes de hardware nao fiquem presas em um so core (RPS).
-echo "f" > "/sys/class/net/$IFACE/queues/rx-0/rps_cpus" 2>/dev/null || true
+RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
+if [[ -w "$RPS_FILE" ]]; then
+  echo "f" > "$RPS_FILE" 2>/dev/null || true
+fi
 
 # ---------- Policy routing por interface ----------
 
@@ -86,10 +89,10 @@ flock -u 9
 
 # Evita recriar regras a cada fluxo e reduz interferencia entre uploads/downloads simultaneos.
 if ! ip rule show | grep -q "^${RULE_PREF_FROM}:"; then
-  ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM"
+  ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
 fi
 if ! ip rule show | grep -q "^${RULE_PREF_OIF}:"; then
-  ip rule add oif "$IFACE" table "$TABLE_ID" pref "$RULE_PREF_OIF"
+  ip rule add oif "$IFACE" table "$TABLE_ID" pref "$RULE_PREF_OIF" 2>/dev/null || true
 fi
 
 cleanup() {

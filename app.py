@@ -6,6 +6,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -27,6 +28,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 TEST_LOCK = threading.Lock()
 ACTIVE_TESTS: Dict[str, "TestTask"] = {}
+REMOTE_MONITORS_LOCK = threading.Lock()
+REMOTE_MONITORS: Dict[str, threading.Event] = {}
 EXCLUDED_IFACE_PREFIXES = (
     "docker",
     "veth",
@@ -57,6 +60,18 @@ class TestTask:
     process: subprocess.Popen
 
 
+def stop_remote_monitor(sid: str, expected_event: Optional[threading.Event] = None) -> None:
+    """Encerra monitoramento remoto ativo para uma sessao."""
+
+    with REMOTE_MONITORS_LOCK:
+        current = REMOTE_MONITORS.get(sid)
+        if expected_event is not None and current is not expected_event:
+            return
+        event = REMOTE_MONITORS.pop(sid, None)
+    if event is not None:
+        event.set()
+
+
 def run_command(cmd: List[str]) -> str:
     """Executa comando sem shell para evitar injeÃ§Ã£o de comandos."""
 
@@ -64,6 +79,24 @@ def run_command(cmd: List[str]) -> str:
     if completed.returncode != 0:
         return ""
     return completed.stdout
+
+
+def find_closed_ports(server_ip: str, ports: List[int], timeout: float = 0.8) -> List[int]:
+    """Verifica quais portas do servidor remoto nao estao aceitando conexao TCP."""
+
+    closed = []
+    for port in sorted(set(ports)):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            result = sock.connect_ex((server_ip, int(port)))
+            if result != 0:
+                closed.append(port)
+        except Exception:
+            closed.append(port)
+        finally:
+            sock.close()
+    return closed
 
 
 def parse_mbps(value: float, unit: str) -> float:
@@ -405,6 +438,84 @@ def setup_remote_server(ip, user, password, ports):
         client.close()
 
 
+def monitor_remote_system(
+    ip: str,
+    user: str,
+    password: str,
+    sid: str,
+    stop_event: threading.Event,
+    deadline_ts: float,
+) -> None:
+    """Monitora CPU/RAM do servidor remoto e emite via socketio."""
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    prev_total: Optional[int] = None
+    prev_idle: Optional[int] = None
+
+    cmd = (
+        "awk '/^cpu / {print $2, $3, $4, $5, $6, $7, $8, $9} "
+        "/^MemTotal:/ {mt=$2} /^MemAvailable:/ {ma=$2} "
+        "END {print mt, ma}' /proc/stat /proc/meminfo"
+    )
+
+    try:
+        client.connect(ip, username=user, password=password, timeout=5)
+        while not stop_event.is_set() and time.time() < deadline_ts:
+            stdin, stdout, stderr = client.exec_command(cmd, timeout=4)
+            _ = stdin
+            err = stderr.read().decode(errors="ignore").strip()
+            out_lines = stdout.read().decode(errors="ignore").strip().splitlines()
+            if err or len(out_lines) < 2:
+                time.sleep(1)
+                continue
+
+            try:
+                cpu_fields = [int(x) for x in out_lines[0].split()]
+                mem_total_kb, mem_avail_kb = [int(x) for x in out_lines[1].split()[:2]]
+            except (TypeError, ValueError, IndexError):
+                time.sleep(1)
+                continue
+
+            total = sum(cpu_fields)
+            idle = cpu_fields[3] + cpu_fields[4]  # idle + iowait
+
+            cpu_percent = None
+            if prev_total is not None and prev_idle is not None:
+                diff_total = total - prev_total
+                diff_idle = idle - prev_idle
+                if diff_total > 0:
+                    cpu_percent = round((1 - (diff_idle / diff_total)) * 100, 1)
+
+            prev_total = total
+            prev_idle = idle
+
+            mem_used_kb = max(0, mem_total_kb - mem_avail_kb)
+            ram_percent = round((mem_used_kb / mem_total_kb) * 100, 1) if mem_total_kb > 0 else 0.0
+
+            socketio.emit(
+                "remote_system_status",
+                {
+                    "cpu": cpu_percent,
+                    "ram_percent": ram_percent,
+                    "ram_used_gb": round(mem_used_kb / (1024**2), 2),
+                    "ram_total_gb": round(mem_total_kb / (1024**2), 2),
+                },
+                room=sid,
+            )
+            time.sleep(1)
+    except Exception as exc:
+        socketio.emit(
+            "remote_system_status",
+            {"error": f"Falha ao monitorar servidor remoto: {str(exc)}"},
+            room=sid,
+        )
+    finally:
+        client.close()
+        stop_remote_monitor(sid, stop_event)
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -418,7 +529,10 @@ def get_interfaces():
 @socketio.on("start_test")
 def start_test(payload: dict):
     """Inicia testes simultÃ¢neos de acordo com interfaces e modo selecionados."""
-    
+
+    sid = request.sid
+    stop_remote_monitor(sid)
+
     error = validate_payload(payload)
     if error:
         emit("test_error", {"message": error})
@@ -433,6 +547,8 @@ def start_test(payload: dict):
     base_port = int(payload.get("base_port", 5201))
     parallel = int(payload.get("parallel", 4))
     selected_mode = payload["mode"]
+    duration = int(payload["duration"])
+    total_duration = duration * 2 if selected_mode == "both_sequential" else duration
     
     # Portas necessÃ¡rias
     # Se modo for 'both' (simultÃ¢neo), precisamos de 2 portas por interface (uma pra up, uma pra down).
@@ -461,6 +577,36 @@ def start_test(payload: dict):
         # DÃ¡ um tempinho para o iperf3 subir no remoto
         time.sleep(2)
 
+        monitor_stop = threading.Event()
+        with REMOTE_MONITORS_LOCK:
+            REMOTE_MONITORS[sid] = monitor_stop
+        socketio.start_background_task(
+            monitor_remote_system,
+            payload["server_ip"],
+            ssh_user,
+            ssh_pass,
+            sid,
+            monitor_stop,
+            time.time() + total_duration + 20,
+        )
+    else:
+        emit("remote_system_status", {"disabled": True})
+        closed_ports = find_closed_ports(payload["server_ip"], needed_ports)
+        if closed_ports:
+            preview = ", ".join(str(p) for p in closed_ports[:8])
+            suffix = "..." if len(closed_ports) > 8 else ""
+            emit(
+                "test_error",
+                {
+                    "message": (
+                        "Portas do iperf3 indisponiveis no servidor remoto: "
+                        f"{preview}{suffix}. "
+                        "No modo 'Ambos (simultaneo)' sao necessarias 2 portas por interface."
+                    )
+                },
+            )
+            return
+
     # Limpa testes anteriores forÃ§adamente
     with TEST_LOCK:
         if ACTIVE_TESTS:
@@ -486,8 +632,6 @@ def start_test(payload: dict):
     if error:
         emit("test_error", {"message": error})
         return
-
-    sid = request.sid
 
     server_ip = payload["server_ip"]
     duration = int(payload["duration"])
