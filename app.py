@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-11-r10a"
+APP_REV = "2026-02-11-r10c"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -879,8 +879,13 @@ def index():
     return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
 
 
-@app.route("/r10b")
+@app.route("/r10b", strict_slashes=False)
 def index_r10b():
+    return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
+
+
+@app.route("/v2", strict_slashes=False)
+def index_v2():
     return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
 
 
