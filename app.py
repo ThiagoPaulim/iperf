@@ -348,6 +348,11 @@ def get_interfaces():
 @socketio.on("start_test")
 def start_test(payload: dict):
     """Inicia testes simultâneos de acordo com interfaces e modo selecionados."""
+    
+    error = validate_payload(payload)
+    if error:
+        emit("test_error", {"message": error})
+        return
 
     # Verifica configuração remota opcional
     configure_server = payload.get("configure_server", False)
