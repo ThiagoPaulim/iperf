@@ -261,6 +261,15 @@ async function loadInterfaces() {
   });
 }
 
+configureServerCheck = document.getElementById("configureServer");
+const sshFieldsDiv = document.getElementById("sshFields");
+
+if (configureServerCheck) {
+  configureServerCheck.addEventListener("change", () => {
+    sshFieldsDiv.style.display = configureServerCheck.checked ? "grid" : "none";
+  });
+}
+
 startBtn.addEventListener("click", () => {
   const serverIp = document.getElementById("serverIp").value.trim();
   const duration = Number(document.getElementById("duration").value);
@@ -268,6 +277,10 @@ startBtn.addEventListener("click", () => {
   const basePort = Number(document.getElementById("basePort").value) || 5201;
   const parallel = Number(document.getElementById("parallel").value) || 4;
   const interfaces = [...document.querySelectorAll(".iface-check:checked")].map((el) => el.value);
+
+  const configureServer = configureServerCheck ? configureServerCheck.checked : false;
+  const sshUser = document.getElementById("sshUser") ? document.getElementById("sshUser").value.trim() : "";
+  const sshPass = document.getElementById("sshPass") ? document.getElementById("sshPass").value : "";
 
   resultsTable.innerHTML = "";
   if (metricsTable) {
@@ -278,7 +291,11 @@ startBtn.addEventListener("click", () => {
   throughputChart.update();
   latestThroughput.upload = {};
   latestThroughput.download = {};
+
   log(`Iniciando testes com ${parallel} streams paralelas...`);
+  if (configureServer) {
+    log(`Configuração remota via SSH ativada.`);
+  }
 
   socket.emit("start_test", {
     server_ip: serverIp,
@@ -287,6 +304,9 @@ startBtn.addEventListener("click", () => {
     base_port: basePort,
     parallel,
     interfaces,
+    configure_server: configureServer,
+    ssh_user: sshUser,
+    ssh_pass: sshPass
   });
 });
 

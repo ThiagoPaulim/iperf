@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import psutil
+import paramiko
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -298,6 +299,42 @@ def run_sequential_both(
             t.join()
 
 
+def setup_remote_server(ip, user, password, ports):
+    """Conecta via SSH e inicia instâncias do iperf3 nas portas necessárias."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    try:
+        print(f"Conectando ao servidor remoto {ip} via SSH...", flush=True)
+        client.connect(ip, username=user, password=password, timeout=5)
+        
+        running_ports = []
+        for port in ports:
+            # Mata qualquer processo já rodando nesta porta para garantir estado limpo
+            # fuser -k -n tcp PORT ou pkill -f "iperf3 -s -p PORT"
+            # O comando abaixo mata processos ouvindo na porta especificada.
+            kill_cmd = f"fuser -k -n tcp {port} || true"
+            client.exec_command(kill_cmd)
+            time.sleep(0.5)
+
+            # Inicia iperf3 em background (daemon)
+            start_cmd = f"nohup iperf3 -s -p {port} -D > /dev/null 2>&1 &"
+            stdin, stdout, stderr = client.exec_command(start_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                running_ports.append(port)
+            else:
+                print(f"Falha ao iniciar iperf3 na porta {port} (remoto)", flush=True)
+
+        return True, f"Serviços iniciados nas portas: {running_ports}"
+
+    except Exception as e:
+        return False, f"Erro SSH: {str(e)}"
+    finally:
+        client.close()
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -311,6 +348,34 @@ def get_interfaces():
 @socketio.on("start_test")
 def start_test(payload: dict):
     """Inicia testes simultâneos de acordo com interfaces e modo selecionados."""
+
+    # Verifica configuração remota opcional
+    configure_server = payload.get("configure_server", False)
+    ssh_user = payload.get("ssh_user")
+    ssh_pass = payload.get("ssh_pass")
+    
+    interfaces = payload["interfaces"]
+    base_port = int(payload.get("base_port", 5201))
+    parallel = int(payload.get("parallel", 4))
+    
+    # Portas necessárias (uma por interface)
+    needed_ports = [base_port + i for i in range(len(interfaces))]
+
+    # Se configuração automática estiver ativa, tenta configurar o servidor antes
+    if configure_server:
+        if not ssh_user or not ssh_pass:
+            emit("test_error", {"message": "Usuário e Senha SSH são obrigatórios para configuração automática."})
+            return
+
+        emit("test_error", {"message": "Configurando servidor remoto via SSH..."}) # Usa error message para toast/log
+        success, msg = setup_remote_server(payload["server_ip"], ssh_user, ssh_pass, needed_ports)
+        if not success:
+            emit("test_error", {"message": f"Falha na configuração remota: {msg}"})
+            return
+        
+        print(f"Servidor remoto configurado: {msg}", flush=True)
+        # Dá um tempinho para o iperf3 subir no remoto
+        time.sleep(2)
 
     # Limpa testes anteriores forçadamente
     with TEST_LOCK:

@@ -56,6 +56,25 @@
           Porta do servidor
           <input id="basePort" type="number" min="1" max="65535" value="5201" />
         </label>
+
+        <div style="grid-column: 1 / -1; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;">
+          <label style="flex-direction: row; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="configureServer" style="width: auto;" />
+            Configurar Servidor Remoto Automaticamente (SSH)
+          </label>
+        </div>
+
+        <div id="sshFields" class="form-grid" style="grid-column: 1 / -1; display: none;">
+          <label>
+            Usuário SSH
+            <input id="sshUser" type="text" placeholder="root" />
+          </label>
+          <label>
+            Senha SSH
+            <input id="sshPass" type="password" placeholder="Senha" />
+          </label>
+        </div>
+
         <label>
           Streams paralelas (-P)
           <input id="parallel" type="number" min="1" max="64" value="4" />
