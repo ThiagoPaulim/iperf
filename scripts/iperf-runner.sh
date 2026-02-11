@@ -91,69 +91,58 @@ fi
 
 # ---------- Policy routing ----------
 
-# Usamos a própria PORTA do iperf como ID da tabela de roteamento.
-# Como o app.py garante que cada fluxo simultâneo tem uma porta única,
-# isso garante que não haverá colisão de tabela entre interfaces ou fluxos.
-TABLE_ID="$PORT"
+# ---------- Policy routing (Isolamento de Interface) ----------
 
-echo "DEBUG: Interface '$IFACE' (Port $PORT) -> Table ID: $TABLE_ID" >&2
+# Usamos o ifindex da interface como base para o ID da tabela.
+# Isso garante que todos os fluxos da mesma interface usem a mesma tabela de roteamento,
+# o que é essencial para o modo 'both' (simultâneo) e estabilidade.
+IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
+TABLE_ID=$((IFINDEX + 1000))
 
-# Flag para controlar se criamos as regras (para cleanup).
-RULES_CREATED=0
+echo "DEBUG: Configurando Tabela $TABLE_ID para interface $IFACE (IP: $BIND_IP)" >&2
 
-cleanup() {
-  if [[ "$RULES_CREATED" -eq 1 ]]; then
-    # Remove as regras de policy routing criadas.
-    ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-    ip route flush table "$TABLE_ID" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
-
-# Só cria policy routing se encontrou um gateway.
-# Remove regras antigas que possam existir para este IP/tabela a força bruta
-ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-# Remove regra por prioridade se existir (cleanup antigo pode ter falhado)
-ip rule del pref 1000 table "$TABLE_ID" 2>/dev/null || true
-
+# Limpeza de possíveis regras e rotas órfãs para este IP/Interface
+while ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null; do :; done
 ip route flush table "$TABLE_ID" 2>/dev/null || true
 
-# Adiciona regra com Prioridade alta (1000)
+# 1. Clonagem de Rotas da Tabela 'main' para a Tabela customizada
+# Copiamos todas as rotas que pertencem a esta interface para garantir que a 
+# LAN local e o Gateway oficial funcionem dentro da tabela isolada.
+while read -r route; do
+    # Remove prefixos de outras tabelas para garantir inserção na nossa
+    clean_route=$(echo "$route" | sed 's/table [a-zA-Z0-9]\+//g')
+    ip route replace $clean_route table "$TABLE_ID" 2>/dev/null || true
+done < <(ip route show dev "$IFACE" table main)
+
+# 2. Reforça o Gateway Padrão se encontrado
+if [[ -n "$GATEWAY" ]]; then
+    ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+fi
+
+# 3. Fallback Crítico: Se não temos rota default nem rota específica para o servidor, 
+# forçamos a saída pela interface (ARP direto).
+if ! ip route show table "$TABLE_ID" | grep -qE "default|$SERVER_IP"; then
+    echo "DEBUG: Forçando rota direta para $SERVER_IP via $IFACE" >&2
+    ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+fi
+
+# 4. Ativa a regra de Policy Routing
+# 'Qualquer pacote COM este IP de origem DEVE usar esta tabela'
 ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
 
-# Adiciona a Subrede local na tabela para evitar que tráfego local use o gateway
-if [[ -n "$SUBNET" ]]; then
-  # Garante que a rota da subrede exista na tabela customizada como rota de link
-  ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-fi
-
-# Adiciona rota específica para o servidor
-# Verifica se o servidor é alcançável diretamente (sem via) na interface original
-IS_LOCAL=$(ip route get "$SERVER_IP" dev "$IFACE" 2>/dev/null | grep -v "via" || true)
-
-if [[ -n "$IS_LOCAL" ]]; then
-  # Servidor na mesma rede local: rota direta pela interface
-  ip route add "$SERVER_IP" dev "$IFACE" scope link table "$TABLE_ID" 2>/dev/null || true
-  echo "DEBUG: Policy routing (Local): $SERVER_IP dev $IFACE (Table $TABLE_ID)"
-elif [[ -n "$GATEWAY" ]]; then
-  # Servidor remoto: via Gateway
-  ip route add "$SERVER_IP" via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  echo "DEBUG: Policy routing (Gateway): $SERVER_IP via $GATEWAY dev $IFACE (Table $TABLE_ID)"
-else
-  # Fallback: tenta direto pela interface
-  ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  echo "DEBUG: Policy routing (Fallback Direct): $SERVER_IP dev $IFACE (Table $TABLE_ID)"
-fi
-
-# Força limpeza do cache de rotas para garantir que as novas regras peguem imediatamente
+# Limpa cache do kernel para aplicar imediatamente
 ip route flush cache 2>/dev/null || true
+
+# DEBUG FINAL: Mostra como ficou a tabela para diagnóstico
+echo "--- TABELA $TABLE_ID ($IFACE) ---" >&2
+ip route show table "$TABLE_ID" >&2
+echo "---------------------------------" >&2
 
 RULES_CREATED=1
 
-# DEBUG: Verifica qual interface o Kernel decidiu usar para este destino+origem
-ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" iif "$IFACE" 2>/dev/null || echo "Erro rota")
-echo "DEBUG_ROUTE: $ROUTE_DEBUG"
+# Verifica qual interface o Kernel decidiu usar para este destino+origem
+ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" 2>/dev/null || echo "Erro ao verificar rota final")
+echo "DEBUG_ROUTE: $ROUTE_DEBUG" >&2
 
 # ---------- Métricas Iniciais (Ping) ----------
 
