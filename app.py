@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-11-r10d"
+APP_REV = "2026-02-11-r10e"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -742,47 +742,69 @@ def setup_remote_server(ip, user, password, ports):
         client.connect(ip, username=user, password=password, timeout=5)
 
         ports = sorted({int(p) for p in ports})
-        running_ports = []
-        for port in ports:
-            # Garante que a porta esteja livre antes de subir novo daemon.
-            kill_cmd = (
-                f"fuser -k -n tcp {port} >/dev/null 2>&1 || true; "
-                f"pkill -f 'iperf3 -s -p {port}' >/dev/null 2>&1 || true; "
-                f"for i in $(seq 1 20); do "
-                f"ss -ltn sport = :{port} | grep -q LISTEN || break; "
-                f"sleep 0.2; "
-                f"done"
-            )
-            _kin, _kout, _kerr = client.exec_command(kill_cmd)
-            _ = _kin, _kerr
-            _kout.channel.recv_exit_status()
+        ports_arg = " ".join(str(p) for p in ports)
+        # Usa uma unica execucao remota para reduzir abertura de canais SSH.
+        remote_cmd = f"""
+PORTS="{ports_arg}"
+for p in $PORTS; do
+  fuser -k -n tcp "$p" >/dev/null 2>&1 || true
+  pkill -f "iperf3 -s -p $p" >/dev/null 2>&1 || true
+done
+for p in $PORTS; do
+  for i in $(seq 1 20); do
+    ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN || break
+    sleep 0.2
+  done
+done
+for p in $PORTS; do
+  iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
+done
+for p in $PORTS; do
+  ok=0
+  for i in $(seq 1 25); do
+    if ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN; then
+      ok=1
+      break
+    fi
+    sleep 0.2
+  done
+  if [ "$ok" -eq 1 ]; then
+    echo "OK:$p"
+  else
+    echo "FAIL:$p"
+  fi
+done
+"""
+        stdin, stdout, stderr = client.exec_command(remote_cmd, timeout=45)
+        _ = stdin
+        exit_status = stdout.channel.recv_exit_status()
+        out = stdout.read().decode(errors="ignore")
+        err = stderr.read().decode(errors="ignore")
 
-            start_cmd = f"iperf3 -s -p {port} -D"
-            stdin, stdout, stderr = client.exec_command(start_cmd)
-            _ = stdin, stderr
-            exit_status = stdout.channel.recv_exit_status()
+        running_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("OK:")
+            }
+        )
+        failed_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("FAIL:")
+            }
+        )
 
-            if exit_status == 0:
-                verify_cmd = (
-                    f"for i in $(seq 1 20); do "
-                    f"ss -ltn sport = :{port} | grep -q LISTEN && exit 0; "
-                    f"sleep 0.2; "
-                    f"done; exit 1"
-                )
-                _in, _out, _err = client.exec_command(verify_cmd)
-                verify_status = _out.channel.recv_exit_status()
-                if verify_status == 0:
-                    running_ports.append(port)
-                else:
-                    print(f"Porta {port} nao entrou em LISTEN apos start.", flush=True)
-            else:
-                print(f"Falha ao iniciar iperf3 na porta {port} (remoto)", flush=True)
+        if exit_status != 0:
+            print(f"Setup remoto retornou status {exit_status}. stderr={err.strip()}", flush=True)
         missing_ports = sorted(set(ports) - set(running_ports))
         if missing_ports:
             return (
                 False,
                 "Falha ao iniciar iperf3 em todas as portas. "
-                f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports}",
+                f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports} | "
+                f"Falhas reportadas: {failed_ports} | stderr: {err.strip()[:180]}",
             )
         return True, f"ServiÃ§os iniciados nas portas: {sorted(running_ports)}"
 
