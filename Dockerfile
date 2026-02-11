@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y \
     ethtool \
     net-tools \
     iputils-ping \
+    gcc \
+    libffi-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
