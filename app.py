@@ -13,7 +13,7 @@ import psutil
 import paramiko
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
@@ -299,6 +299,33 @@ def run_sequential_both(
             t.join()
 
 
+def run_parallel_tests(
+    server_ip: str,
+    duration: int,
+    tests: List[Tuple[str, str, int]],
+    sid: str,
+    parallel: int,
+) -> None:
+    """Dispara todos os testes de uma vez para inicio praticamente simultaneo."""
+
+    start_event = threading.Event()
+    threads = []
+
+    def worker(iface: str, mode: str, port: int) -> None:
+        start_event.wait()
+        run_single_test(server_ip, duration, iface, mode, sid, port, parallel)
+
+    for iface, mode, port in tests:
+        t = threading.Thread(target=worker, args=(iface, mode, port))
+        t.start()
+        threads.append(t)
+
+    start_event.set()
+
+    for t in threads:
+        t.join()
+
+
 def setup_remote_server(ip, user, password, ports):
     """Conecta via SSH e inicia instâncias do iperf3 nas portas necessárias."""
     client = paramiko.SSHClient()
@@ -448,21 +475,21 @@ def start_test(payload: dict):
         )
     else:
         # Modos simultâneos: todos os testes ao mesmo tempo.
+        tests: List[Tuple[str, str, int]] = []
         port_idx = 0
         for iface in interfaces:
             for mode in modes:
                 port = base_port + port_idx
-                socketio.start_background_task(
-                    run_single_test,
-                    server_ip,
-                    duration,
-                    iface,
-                    mode,
-                    sid,
-                    port,
-                    parallel,
-                )
+                tests.append((iface, mode, port))
                 port_idx += 1
+        socketio.start_background_task(
+            run_parallel_tests,
+            server_ip,
+            duration,
+            tests,
+            sid,
+            parallel,
+        )
 
 
 def monitor_system():

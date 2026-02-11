@@ -291,7 +291,7 @@ function showToast(message, type = "info") {
   }, 5000);
 }
 
-configureServerCheck = document.getElementById("configureServer");
+const configureServerCheck = document.getElementById("configureServer");
 const sshFieldsDiv = document.getElementById("sshFields");
 
 if (configureServerCheck) {
@@ -411,10 +411,6 @@ socket.on("test_result", (msg) => {
   row.innerHTML = `<td>${msg.interface}</td><td>${msg.mode}</td><td>${status}</td><td>${result}</td>`;
   resultsTable.appendChild(row);
   log(`Finalizado: ${msg.interface} ${msg.mode} -> ${result}`);
-});
-
-socket.on("test_error", (msg) => {
-  log(`Erro: ${msg.message}`);
 });
 
 socket.on("system_status", (msg) => {
