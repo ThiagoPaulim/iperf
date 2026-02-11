@@ -16,6 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
+RUNNER_REV="2026-02-11-r3"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -56,7 +57,7 @@ SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
 # ---------- Tunings de hardware (NIC) ----------
 
-echo "Otimizando Ring Buffers e Offloading na interface $IFACE..." >&2
+echo "Otimizando Ring Buffers e Offloading na interface $IFACE... (rev: $RUNNER_REV)" >&2
 
 # Aumenta os buffers RX/TX para o maximo suportado pelo hardware.
 ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
@@ -65,8 +66,8 @@ ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
 # Garante que as interrupcoes de hardware nao fiquem presas em um so core (RPS).
 RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
 if [[ -e "$RPS_FILE" ]]; then
-  # Em alguns ambientes o sysfs e read-only; suprimimos erro de redirecionamento do shell.
-  { echo "f" > "$RPS_FILE"; } 2>/dev/null || true
+  # Evita erro de redirecionamento em sysfs read-only.
+  printf "f\n" | tee "$RPS_FILE" >/dev/null 2>/dev/null || true
 fi
 
 # ---------- Policy routing por interface ----------
@@ -81,13 +82,21 @@ exec 9>"$LOCK_FILE"
 flock 9
 ACTIVE_COUNT=0
 if [[ -f "$COUNT_FILE" ]]; then
+  # Se sobrou contador antigo e nao existe outro runner da interface, reseta estado.
+  if [[ "$(pgrep -fc "iperf-runner.sh $IFACE" || true)" -le 1 ]]; then
+    rm -f "$COUNT_FILE"
+  fi
+fi
+if [[ -f "$COUNT_FILE" ]]; then
   ACTIVE_COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
 fi
 ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
 echo "$ACTIVE_COUNT" > "$COUNT_FILE"
 
-# Evita recriar regras a cada fluxo e reduz interferencia entre uploads/downloads simultaneos.
-if ! ip rule show | grep -q "^${RULE_PREF_FROM}:"; then
+# Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
+if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
+  ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
+  ip route flush table "$TABLE_ID" 2>/dev/null || true
   ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
 fi
 
@@ -119,7 +128,7 @@ GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3
 [[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
 
 if [[ -n "$SUBNET" ]]; then
-  ip route replace "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  ip route replace "$SUBNET" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
 if [[ -n "$GATEWAY" ]]; then
