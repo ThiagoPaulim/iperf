@@ -16,9 +16,10 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r5"
+RUNNER_REV="2026-02-11-r6"
 ENABLE_NIC_TUNING="${ENABLE_NIC_TUNING:-0}"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
+ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -74,37 +75,26 @@ else
   echo "Tunings de NIC desativados (ENABLE_NIC_TUNING=0)." >&2
 fi
 
-# ---------- Policy routing por interface ----------
+# ---------- Policy routing por interface (opcional) ----------
 
 IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
 TABLE_ID=$((IFINDEX + 1000))
 RULE_PREF_FROM=$((20000 + IFINDEX))
 LOCK_FILE="/tmp/iperf-runner-${IFACE}.lock"
 COUNT_FILE="/tmp/iperf-runner-${IFACE}.count"
-
-exec 9>"$LOCK_FILE"
-flock 9
-ACTIVE_COUNT=0
-if [[ -f "$COUNT_FILE" ]]; then
-  # Se sobrou contador antigo e nao existe outro runner da interface, reseta estado.
-  if [[ "$(pgrep -fc "iperf-runner.sh $IFACE" || true)" -le 1 ]]; then
-    rm -f "$COUNT_FILE"
-  fi
-fi
-if [[ -f "$COUNT_FILE" ]]; then
-  ACTIVE_COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
-fi
-ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
-echo "$ACTIVE_COUNT" > "$COUNT_FILE"
-
-# Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
-if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
-  ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
-  ip route flush table "$TABLE_ID" 2>/dev/null || true
-  ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
+GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
+[[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
+ROUTE_HINT=$(ip -4 route get "$SERVER_IP" oif "$IFACE" 2>/dev/null | head -n1 || true)
+HINT_GATEWAY=$(awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}' <<<"$ROUTE_HINT")
+if [[ -n "$HINT_GATEWAY" ]]; then
+  GATEWAY="$HINT_GATEWAY"
 fi
 
 cleanup() {
+  if [[ "$ENABLE_POLICY_ROUTING" != "1" ]]; then
+    return
+  fi
+
   flock 9
   local active_count
   active_count=0
@@ -127,22 +117,45 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Monta rotas na tabela dedicada.
-GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
-[[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
+if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
+  exec 9>"$LOCK_FILE"
+  flock 9
+  ACTIVE_COUNT=0
+  if [[ -f "$COUNT_FILE" ]]; then
+    # Se sobrou contador antigo e nao existe outro runner da interface, reseta estado.
+    if [[ "$(pgrep -fc "iperf-runner.sh $IFACE" || true)" -le 1 ]]; then
+      rm -f "$COUNT_FILE"
+    fi
+  fi
+  if [[ -f "$COUNT_FILE" ]]; then
+    ACTIVE_COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+  fi
+  ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
+  echo "$ACTIVE_COUNT" > "$COUNT_FILE"
 
-if [[ -n "$SUBNET" ]]; then
-  ip route replace "$SUBNET" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-fi
+  # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
+  if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
+    ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
+    ip route flush table "$TABLE_ID" 2>/dev/null || true
+    ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
+  fi
 
-if [[ -n "$GATEWAY" ]]; then
-  ip route replace "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  # Monta rotas na tabela dedicada.
+  if [[ -n "$SUBNET" ]]; then
+    ip route replace "$SUBNET" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  fi
+
+  if [[ -n "$GATEWAY" ]]; then
+    ip route replace "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+    ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  else
+    ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  fi
+
+  flock -u 9
 else
-  ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  echo "Policy routing desativado (ENABLE_POLICY_ROUTING=0)." >&2
 fi
-
-flock -u 9
 
 # ---------- Tunings de alta performance (rede) ----------
 # Desativado por padrao para evitar alteracoes globais no host a cada fluxo.
@@ -163,6 +176,10 @@ ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" 2>/dev/null || echo "Err
 echo "DEBUG_ROUTE: $ROUTE_DEBUG" >&2
 if [[ "$ROUTE_DEBUG" == "Erro ao verificar rota final" || "$ROUTE_DEBUG" == *"unreachable"* || "$ROUTE_DEBUG" == *"prohibit"* ]]; then
   echo "Sem rota valida para $SERVER_IP a partir de $BIND_IP na interface $IFACE." >&2
+  exit 1
+fi
+if [[ "$ENABLE_POLICY_ROUTING" == "1" && "$ROUTE_DEBUG" != *" dev $IFACE "* ]]; then
+  echo "Rota final nao saiu por $IFACE: $ROUTE_DEBUG" >&2
   exit 1
 fi
 
@@ -195,5 +212,15 @@ if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi
 
+# Evita travamentos longos de conexao em interfaces sem alcance.
+if iperf3 --help 2>&1 | grep -q -- "--connect-timeout"; then
+  CMD+=( --connect-timeout 5000 )
+fi
+
 echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2
-"${CMD[@]}"
+RUN_TIMEOUT=$((DURATION + 25))
+if command -v timeout >/dev/null 2>&1; then
+  timeout --foreground --signal=TERM "$RUN_TIMEOUT" "${CMD[@]}"
+else
+  "${CMD[@]}"
+fi

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import ipaddress
 import os
 import re
@@ -28,6 +29,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 TEST_LOCK = threading.Lock()
 ACTIVE_TESTS: Dict[str, "TestTask"] = {}
+RUN_STATE_LOCK = threading.Lock()
+RUN_STATE: Dict[str, str] = {}
 REMOTE_MONITORS_LOCK = threading.Lock()
 REMOTE_MONITORS: Dict[str, threading.Event] = {}
 EXCLUDED_IFACE_PREFIXES = (
@@ -49,15 +52,69 @@ EXCLUDED_IFACE_PREFIXES = (
     "tailscale",
     "services",
 )
+ALLOW_VIRTUAL_INTERFACES = os.environ.get("ALLOW_VIRTUAL_INTERFACES", "1") == "1"
 
 
 @dataclass
 class TestTask:
     """Representa uma execuÃ§Ã£o iperf em uma interface/modo."""
 
+    sid: str
+    run_id: str
     interface: str
     mode: str
     process: subprocess.Popen
+
+
+def set_run_id(sid: str, run_id: str) -> None:
+    with RUN_STATE_LOCK:
+        RUN_STATE[sid] = run_id
+
+
+def get_run_id(sid: str) -> Optional[str]:
+    with RUN_STATE_LOCK:
+        return RUN_STATE.get(sid)
+
+
+def is_current_run(sid: str, run_id: str) -> bool:
+    return get_run_id(sid) == run_id
+
+
+def emit_run_event(event: str, payload: dict, sid: str, run_id: str) -> None:
+    message = dict(payload)
+    message["run_id"] = run_id
+    socketio.emit(event, message, room=sid)
+
+
+def stop_active_tests_for_sid(sid: str) -> int:
+    """Encerra processos ativos de teste associados a uma sessao Socket.IO."""
+
+    with TEST_LOCK:
+        targets = [(tid, task) for tid, task in ACTIVE_TESTS.items() if task.sid == sid]
+
+    if not targets:
+        return 0
+
+    for tid, task in targets:
+        try:
+            task.process.terminate()
+            task.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print(f"Teste {tid} travou. ForÃ§ando kill...", flush=True)
+            try:
+                task.process.kill()
+                task.process.wait(timeout=3)
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"Erro ao parar teste {tid}: {exc}", flush=True)
+
+    with TEST_LOCK:
+        for tid, task in list(ACTIVE_TESTS.items()):
+            if task.sid == sid:
+                ACTIVE_TESTS.pop(tid, None)
+
+    return len(targets)
 
 
 def stop_remote_monitor(sid: str, expected_event: Optional[threading.Event] = None) -> None:
@@ -97,6 +154,22 @@ def find_closed_ports(server_ip: str, ports: List[int], timeout: float = 0.8) ->
         finally:
             sock.close()
     return closed
+
+
+def wait_for_open_ports(
+    server_ip: str, ports: List[int], max_wait_s: float, probe_timeout_s: float = 0.8
+) -> List[int]:
+    """Aguarda ate max_wait_s para todas as portas ficarem acessiveis."""
+
+    end_ts = time.time() + max_wait_s
+    closed = sorted(set(ports))
+    while True:
+        closed = find_closed_ports(server_ip, ports, timeout=probe_timeout_s)
+        if not closed:
+            return []
+        if time.time() >= end_ts:
+            return sorted(set(closed))
+        time.sleep(0.4)
 
 
 def parse_mbps(value: float, unit: str) -> float:
@@ -150,6 +223,10 @@ def list_interfaces() -> List[dict]:
             continue
 
         name = raw_name.split("@", 1)[0]
+
+        # Mantem apenas interfaces fisicas por padrao, reduzindo ruido de veth/bridge.
+        if not ALLOW_VIRTUAL_INTERFACES and not Path(f"/sys/class/net/{name}/device").exists():
+            continue
 
         # A aplicacao usa bind IPv4, entao exige IPv4 global na interface.
         addr_out = run_command(["ip", "-4", "-o", "addr", "show", "dev", name, "scope", "global"])
@@ -235,7 +312,14 @@ def validate_payload(payload: dict) -> Optional[str]:
 
 
 def run_single_test(
-    server_ip: str, duration: int, interface: str, mode: str, sid: str, port: int, parallel: int
+    server_ip: str,
+    duration: int,
+    interface: str,
+    mode: str,
+    sid: str,
+    run_id: str,
+    port: int,
+    parallel: int,
 ) -> None:
     """Executa um Ãºnico fluxo iperf e envia atualizaÃ§Ãµes em tempo real."""
 
@@ -250,18 +334,10 @@ def run_single_test(
         str(parallel),
     ]
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-
-    with TEST_LOCK:
-        ACTIVE_TESTS[task_id] = TestTask(interface=interface, mode=mode, process=process)
+    process: Optional[subprocess.Popen] = None
 
     final_mbps = 0.0
+    recent_lines = deque(maxlen=80)
     # Regex base para capturar throughput
     # Formato padrÃ£o: [  5] ...
     # Formato SUM:    [SUM] ...
@@ -274,9 +350,32 @@ def run_single_test(
     metrics_pattern = re.compile(r"\[METRICS\] Ping: ([\d.]+) ms")
 
     try:
+        if not is_current_run(sid, run_id):
+            return
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        with TEST_LOCK:
+            ACTIVE_TESTS[task_id] = TestTask(
+                sid=sid, run_id=run_id, interface=interface, mode=mode, process=process
+            )
+
         assert process.stdout is not None
         for line in process.stdout:
+            if not is_current_run(sid, run_id):
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                break
             line = line.strip()
+            recent_lines.append(line)
             # Log para debug em tempo real no terminal do container
             print(f"[iperf3 raw] {interface}:{mode} -> {line}", flush=True)
 
@@ -284,14 +383,15 @@ def run_single_test(
             m_metrics = metrics_pattern.search(line)
             if m_metrics:
                 ping_val = m_metrics.group(1)
-                socketio.emit(
+                emit_run_event(
                     "metrics_update",
                     {
                         "interface": interface,
                         "mode": mode,
-                        "ping": ping_val
+                        "ping": ping_val,
                     },
-                    room=sid,
+                    sid,
+                    run_id,
                 )
                 continue
 
@@ -310,7 +410,7 @@ def run_single_test(
                 unit = match.group(4)
                 mbps = round(parse_mbps(raw, unit), 2)
                 final_mbps = mbps
-                socketio.emit(
+                emit_run_event(
                     "throughput_update",
                     {
                         "interface": interface,
@@ -318,13 +418,15 @@ def run_single_test(
                         "mbps": mbps,
                         "timestamp": int(time.time()),
                     },
-                    room=sid,
+                    sid,
+                    run_id,
                 )
 
-        stderr_out = process.stderr.read().strip() if process.stderr else ""
         return_code = process.wait()
+        if not is_current_run(sid, run_id):
+            return
         if return_code == 0:
-            socketio.emit(
+            emit_run_event(
                 "test_result",
                 {
                     "interface": interface,
@@ -332,18 +434,34 @@ def run_single_test(
                     "success": True,
                     "final_mbps": final_mbps,
                 },
-                room=sid,
+                sid,
+                run_id,
             )
         else:
-            socketio.emit(
+            error_tail = " | ".join([item for item in list(recent_lines)[-10:] if item])
+            emit_run_event(
                 "test_result",
                 {
                     "interface": interface,
                     "mode": mode,
                     "success": False,
-                    "error": stderr_out or "Falha ao executar iperf3.",
+                    "error": error_tail or "Falha ao executar iperf3.",
                 },
-                room=sid,
+                sid,
+                run_id,
+            )
+    except Exception as exc:
+        if is_current_run(sid, run_id):
+            emit_run_event(
+                "test_result",
+                {
+                    "interface": interface,
+                    "mode": mode,
+                    "success": False,
+                    "error": f"Erro interno ao executar teste: {str(exc)}",
+                },
+                sid,
+                run_id,
             )
     finally:
         with TEST_LOCK:
@@ -355,16 +473,21 @@ def run_sequential_both(
     duration: int,
     interfaces: List[str],
     sid: str,
+    run_id: str,
     base_port: int,
     parallel: int,
 ) -> None:
-    """Executa upload e download por interface, sem concorrencia entre interfaces."""
+    """Executa fases upload e download, com interfaces simultaneas em cada fase."""
 
     for phase_mode in ["upload", "download"]:
-        socketio.emit("phase_started", {"mode": phase_mode}, room=sid)
+        if not is_current_run(sid, run_id):
+            return
+        emit_run_event("phase_started", {"mode": phase_mode}, sid, run_id)
+        phase_tests: List[Tuple[str, str, int]] = []
         for idx, iface in enumerate(interfaces):
             port = base_port + idx
-            run_single_test(server_ip, duration, iface, phase_mode, sid, port, parallel)
+            phase_tests.append((iface, phase_mode, port))
+        run_parallel_tests(server_ip, duration, phase_tests, sid, run_id, parallel)
 
 
 def run_parallel_tests(
@@ -372,6 +495,7 @@ def run_parallel_tests(
     duration: int,
     tests: List[Tuple[str, str, int]],
     sid: str,
+    run_id: str,
     parallel: int,
 ) -> None:
     """Dispara todos os testes de uma vez para inicio praticamente simultaneo."""
@@ -381,7 +505,9 @@ def run_parallel_tests(
 
     def worker(iface: str, mode: str, port: int) -> None:
         start_event.wait()
-        run_single_test(server_ip, duration, iface, mode, sid, port, parallel)
+        if not is_current_run(sid, run_id):
+            return
+        run_single_test(server_ip, duration, iface, mode, sid, run_id, port, parallel)
 
     for iface, mode, port in tests:
         t = threading.Thread(target=worker, args=(iface, mode, port))
@@ -441,6 +567,7 @@ def monitor_remote_system(
     user: str,
     password: str,
     sid: str,
+    run_id: str,
     stop_event: threading.Event,
     deadline_ts: float,
 ) -> None:
@@ -460,7 +587,7 @@ def monitor_remote_system(
 
     try:
         client.connect(ip, username=user, password=password, timeout=5)
-        while not stop_event.is_set() and time.time() < deadline_ts:
+        while not stop_event.is_set() and time.time() < deadline_ts and is_current_run(sid, run_id):
             stdin, stdout, stderr = client.exec_command(cmd, timeout=4)
             _ = stdin
             err = stderr.read().decode(errors="ignore").strip()
@@ -492,7 +619,7 @@ def monitor_remote_system(
             mem_used_kb = max(0, mem_total_kb - mem_avail_kb)
             ram_percent = round((mem_used_kb / mem_total_kb) * 100, 1) if mem_total_kb > 0 else 0.0
 
-            socketio.emit(
+            emit_run_event(
                 "remote_system_status",
                 {
                     "cpu": cpu_percent,
@@ -500,15 +627,18 @@ def monitor_remote_system(
                     "ram_used_gb": round(mem_used_kb / (1024**2), 2),
                     "ram_total_gb": round(mem_total_kb / (1024**2), 2),
                 },
-                room=sid,
+                sid,
+                run_id,
             )
             time.sleep(1)
     except Exception as exc:
-        socketio.emit(
-            "remote_system_status",
-            {"error": f"Falha ao monitorar servidor remoto: {str(exc)}"},
-            room=sid,
-        )
+        if is_current_run(sid, run_id):
+            emit_run_event(
+                "remote_system_status",
+                {"error": f"Falha ao monitorar servidor remoto: {str(exc)}"},
+                sid,
+                run_id,
+            )
     finally:
         client.close()
         stop_remote_monitor(sid, stop_event)
@@ -536,22 +666,37 @@ def start_test(payload: dict):
         emit("test_error", {"message": error})
         return
 
+    run_id = f"{int(time.time() * 1000)}-{os.urandom(3).hex()}"
+    set_run_id(sid, run_id)
+
     # Verifica configuraÃ§Ã£o remota opcional
-    configure_server = payload.get("configure_server", False)
+    configure_server = bool(payload.get("configure_server", False))
     ssh_user = payload.get("ssh_user")
     ssh_pass = payload.get("ssh_pass")
-    
+
+    server_ip = payload["server_ip"]
     interfaces = payload["interfaces"]
     base_port = int(payload.get("base_port", 5201))
     parallel = int(payload.get("parallel", 4))
     selected_mode = payload["mode"]
     duration = int(payload["duration"])
     total_duration = duration * 2 if selected_mode == "both_sequential" else duration
-    
+
+    stopped = stop_active_tests_for_sid(sid)
+    if stopped > 0:
+        print(f"Sessao {sid}: encerrados {stopped} teste(s) ativos antes da nova execucao.", flush=True)
+        emit_run_event(
+            "test_error",
+            {"message": "Reiniciando... aguardando liberaÃ§Ã£o de recursos do teste anterior."},
+            sid,
+            run_id,
+        )
+        time.sleep(2)
+
     # Portas necessÃ¡rias
     # Se modo for 'both' (simultÃ¢neo), precisamos de 2 portas por interface (uma pra up, uma pra down).
     # Em 'both_sequential', reutilizamos a mesma porta pois as fases nÃ£o se sobrepÃµem.
-    needed_ports = []
+    needed_ports: List[int] = []
     if selected_mode == "both":
         total_slots = len(interfaces) * 2
         needed_ports = [base_port + i for i in range(total_slots)]
@@ -559,84 +704,47 @@ def start_test(payload: dict):
         # upload, download e both_sequential usam 1 porta por interface
         needed_ports = [base_port + i for i in range(len(interfaces))]
 
-    # Se configuraÃ§Ã£o automÃ¡tica estiver ativa, tenta configurar o servidor antes
     if configure_server:
         if not ssh_user or not ssh_pass:
-            emit("test_error", {"message": "UsuÃ¡rio e Senha SSH sÃ£o obrigatÃ³rios para configuraÃ§Ã£o automÃ¡tica."})
-            return
-
-        emit("test_error", {"message": "Configurando servidor remoto via SSH..."}) # Usa error message para toast/log
-        success, msg = setup_remote_server(payload["server_ip"], ssh_user, ssh_pass, needed_ports)
-        if not success:
-            emit("test_error", {"message": f"Falha na configuraÃ§Ã£o remota: {msg}"})
-            return
-        
-        print(f"Servidor remoto configurado: {msg}", flush=True)
-        # DÃ¡ um tempinho para o iperf3 subir no remoto
-        time.sleep(2)
-
-        monitor_stop = threading.Event()
-        with REMOTE_MONITORS_LOCK:
-            REMOTE_MONITORS[sid] = monitor_stop
-        socketio.start_background_task(
-            monitor_remote_system,
-            payload["server_ip"],
-            ssh_user,
-            ssh_pass,
-            sid,
-            monitor_stop,
-            time.time() + total_duration + 20,
-        )
-    else:
-        emit("remote_system_status", {"disabled": True})
-        closed_ports = find_closed_ports(payload["server_ip"], needed_ports)
-        if closed_ports:
-            preview = ", ".join(str(p) for p in closed_ports[:8])
-            suffix = "..." if len(closed_ports) > 8 else ""
-            emit(
+            emit_run_event(
                 "test_error",
-                {
-                    "message": (
-                        "Portas do iperf3 indisponiveis no servidor remoto: "
-                        f"{preview}{suffix}. "
-                        "No modo 'Ambos (simultaneo)' sao necessarias 2 portas por interface."
-                    )
-                },
+                {"message": "UsuÃ¡rio e Senha SSH sÃ£o obrigatÃ³rios para configuraÃ§Ã£o automÃ¡tica."},
+                sid,
+                run_id,
             )
             return
 
-    # Limpa testes anteriores forÃ§adamente
-    with TEST_LOCK:
-        if ACTIVE_TESTS:
-            print(f"Parando {len(ACTIVE_TESTS)} testes ativos...", flush=True)
-            for tid, task in list(ACTIVE_TESTS.items()):
-                try:
-                    task.process.terminate()
-                    # Espera o processo morrer de fato para garantir que o cleanup do shell script rodou
-                    task.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    print(f"Teste {tid} travou. ForÃ§ando kill...", flush=True)
-                    task.process.kill()
-                    task.process.wait()
-                except Exception as e:
-                    print(f"Erro ao parar teste {tid}: {e}", flush=True)
-            ACTIVE_TESTS.clear()
-            # Aguarda para o servidor remoto detectar a queda da conexÃ£o e liberar a porta (evita Server Busy)
-            print("Aguardando 3s para liberaÃ§Ã£o de portas no servidor...", flush=True)
-            socketio.emit("test_error", {"message": "Reiniciando... Aguardando liberaÃ§Ã£o de portas no servidor..."})
-            time.sleep(3)
+        emit_run_event("test_error", {"message": "Configurando servidor remoto via SSH..."}, sid, run_id)
+        success, msg = setup_remote_server(server_ip, ssh_user, ssh_pass, needed_ports)
+        if not success:
+            emit_run_event("test_error", {"message": f"Falha na configuraÃ§Ã£o remota: {msg}"}, sid, run_id)
+            return
 
-    error = validate_payload(payload)
-    if error:
-        emit("test_error", {"message": error})
+        print(f"Servidor remoto configurado: {msg}", flush=True)
+        time.sleep(1)
+
+    closed_ports = wait_for_open_ports(
+        server_ip,
+        needed_ports,
+        max_wait_s=6.0 if configure_server else 1.2,
+        probe_timeout_s=0.7,
+    )
+    if closed_ports:
+        preview = ", ".join(str(p) for p in closed_ports[:8])
+        suffix = "..." if len(closed_ports) > 8 else ""
+        emit_run_event(
+            "test_error",
+            {
+                "message": (
+                    "Portas do iperf3 indisponiveis no servidor remoto: "
+                    f"{preview}{suffix}. "
+                    "No modo 'Ambos (simultaneo)' sao necessarias 2 portas por interface."
+                )
+            },
+            sid,
+            run_id,
+        )
         return
-
-    server_ip = payload["server_ip"]
-    duration = int(payload["duration"])
-    interfaces = payload["interfaces"]
-    base_port = int(payload.get("base_port", 5201))
-    parallel = int(payload.get("parallel", 4))
-    selected_mode = payload["mode"]
 
     if selected_mode == "both_sequential":
         modes = ["upload", "download"]
@@ -645,7 +753,24 @@ def start_test(payload: dict):
     else:
         modes = [selected_mode]
 
-    emit("test_started", {"interfaces": interfaces, "modes": modes})
+    emit_run_event("test_started", {"interfaces": interfaces, "modes": modes}, sid, run_id)
+
+    if configure_server:
+        monitor_stop = threading.Event()
+        with REMOTE_MONITORS_LOCK:
+            REMOTE_MONITORS[sid] = monitor_stop
+        socketio.start_background_task(
+            monitor_remote_system,
+            server_ip,
+            ssh_user,
+            ssh_pass,
+            sid,
+            run_id,
+            monitor_stop,
+            time.time() + total_duration + 20,
+        )
+    else:
+        emit_run_event("remote_system_status", {"disabled": True}, sid, run_id)
 
     if selected_mode == "both_sequential":
         # Modo sequencial: upload em todas, espera, depois download em todas.
@@ -655,6 +780,7 @@ def start_test(payload: dict):
             duration,
             interfaces,
             sid,
+            run_id,
             base_port,
             parallel,
         )
@@ -673,6 +799,7 @@ def start_test(payload: dict):
             duration,
             tests,
             sid,
+            run_id,
             parallel,
         )
 

@@ -1,4 +1,4 @@
-const socket = io();
+﻿const socket = io();
 
 // Elementos da DOM
 const interfacesTable = document.getElementById("interfacesTable");
@@ -19,7 +19,7 @@ const remoteRamBar = document.getElementById("remoteRamBar");
 const remoteRamDetails = document.getElementById("remoteRamDetails");
 const throughputCtx = document.getElementById("throughputChart");
 
-// Variáveis Globais
+// VariÃ¡veis Globais
 const interfaceGauges = {};
 const interfaceSpeeds = {};
 const latestThroughput = { upload: {}, download: {} };
@@ -27,10 +27,17 @@ let testInProgress = false;
 let runStarted = false;
 let expectedResults = 0;
 let receivedResults = 0;
+let currentRunId = null;
+
+function isCurrentRunMessage(msg) {
+  if (!msg || !Object.prototype.hasOwnProperty.call(msg, "run_id")) return true;
+  if (!currentRunId) return true;
+  return msg.run_id === currentRunId;
+}
 
 function parseSpeed(speedStr) {
   if (!speedStr || speedStr === "N/A") return 1000;
-  // Extrai o número de strings como "2500Mb/s", "10000Mb/s", etc.
+  // Extrai o nÃºmero de strings como "2500Mb/s", "10000Mb/s", etc.
   const match = speedStr.match(/(\d+)/);
   return match ? parseInt(match[1]) : 1000;
 }
@@ -49,7 +56,7 @@ function resetRemoteSystemStats() {
   remoteRamDetails.textContent = "N/A";
 }
 
-// Configuração do Gráfico de Linha (Throughput)
+// ConfiguraÃ§Ã£o do GrÃ¡fico de Linha (Throughput)
 const throughputChart = new Chart(throughputCtx, {
   type: "line",
   data: { labels: [], datasets: [] },
@@ -89,7 +96,7 @@ const throughputChart = new Chart(throughputCtx, {
   },
 });
 
-// Cores e Utilitários
+// Cores e UtilitÃ¡rios
 const modernColors = [
   '#22d3ee', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#60a5fa'
 ];
@@ -115,7 +122,7 @@ const centerTextPlugin = {
 
     ctx.restore();
 
-    // Configuração do texto
+    // ConfiguraÃ§Ã£o do texto
     const fontSize = (height / 114).toFixed(2);
     ctx.font = `bold ${fontSize}em Segoe UI`;
     ctx.textBaseline = "middle";
@@ -185,7 +192,7 @@ function createGauge(ctx, label, maxSpeed = 1000) {
         tooltip: { enabled: false },
         centerText: { text: "0.00" } // Estado inicial
       },
-      // Passamos o maxSpeed para ser acessível no update
+      // Passamos o maxSpeed para ser acessÃ­vel no update
       maxSpeed: displayMax
     },
   });
@@ -263,7 +270,7 @@ function updateGauge(gauge, label, mbps) {
   const rounded = (Math.round(mbps * 100) / 100).toFixed(2);
   const maxSpeed = gauge.options.maxSpeed || 1000;
 
-  // Se o throughput ultrapassar o maxSpeed (ex: burst), ajustamos o gráfico
+  // Se o throughput ultrapassar o maxSpeed (ex: burst), ajustamos o grÃ¡fico
   const currentMax = Math.max(maxSpeed, mbps);
 
   gauge.data.datasets[0].data = [mbps, Math.max(0, currentMax - mbps)];
@@ -300,7 +307,7 @@ function showToast(message, type = "info") {
 
   toastContainer.appendChild(toast);
 
-  // Remove após 5 segundos
+  // Remove apÃ³s 5 segundos
   setTimeout(() => {
     toast.style.animation = "fadeOut 0.3s forwards";
     toast.addEventListener("animationend", () => {
@@ -335,7 +342,7 @@ startBtn.addEventListener("click", () => {
   const sshUser = document.getElementById("sshUser") ? document.getElementById("sshUser").value.trim() : "";
   const sshPass = document.getElementById("sshPass") ? document.getElementById("sshPass").value : "";
 
-  // Validações com Toast
+  // ValidaÃ§Ãµes com Toast
   if (!serverIp) {
     showToast("Por favor, informe o IP do servidor.", "error");
     return;
@@ -345,13 +352,13 @@ startBtn.addEventListener("click", () => {
     return;
   }
   if (configureServer && (!sshUser || !sshPass)) {
-    showToast("Preencha Usuário e Senha para configuração SSH.", "error");
+    showToast("Preencha UsuÃ¡rio e Senha para configuraÃ§Ã£o SSH.", "error");
     return;
   }
 
   resultsTable.innerHTML = "";
   if (metricsTable) {
-    metricsTable.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#64748b;">Aguardando métricas...</td></tr>`;
+    metricsTable.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#64748b;">Aguardando mÃ©tricas...</td></tr>`;
   }
   throughputChart.data.labels = [];
   throughputChart.data.datasets = [];
@@ -362,12 +369,13 @@ startBtn.addEventListener("click", () => {
   runStarted = false;
   expectedResults = 0;
   receivedResults = 0;
+  currentRunId = null;
   startBtn.disabled = true;
   startBtn.textContent = "Teste em andamento...";
 
   log(`Iniciando testes com ${parallel} streams paralelas...`);
   if (configureServer) {
-    log(`Configuração remota via SSH ativada.`);
+    log(`ConfiguraÃ§Ã£o remota via SSH ativada.`);
   } else {
     resetRemoteSystemStats();
   }
@@ -386,6 +394,8 @@ startBtn.addEventListener("click", () => {
 });
 
 socket.on("test_started", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
+  currentRunId = msg.run_id || currentRunId;
   runStarted = true;
   expectedResults = (msg.interfaces?.length || 0) * (msg.modes?.length || 0);
   receivedResults = 0;
@@ -395,6 +405,7 @@ socket.on("test_started", (msg) => {
 });
 
 socket.on("test_error", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
   showToast(msg.message, "error");
   log(`Erro: ${msg.message}`);
   if (!runStarted) {
@@ -405,10 +416,12 @@ socket.on("test_error", (msg) => {
 });
 
 socket.on("phase_started", (msg) => {
-  log(`▶ Fase iniciada: ${msg.mode.toUpperCase()}`);
+  if (!isCurrentRunMessage(msg)) return;
+  log(`â–¶ Fase iniciada: ${msg.mode.toUpperCase()}`);
 });
 
 socket.on("metrics_update", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
   if (!metricsTable) return;
   const placeholder = metricsTable.querySelector("td[colspan]");
   if (placeholder) {
@@ -424,6 +437,7 @@ socket.on("metrics_update", (msg) => {
 });
 
 socket.on("throughput_update", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
   const label = `${msg.interface} (${msg.mode})`;
   const dataset = getDataset(label);
 
@@ -444,6 +458,7 @@ socket.on("throughput_update", (msg) => {
 });
 
 socket.on("test_result", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
   const row = document.createElement("tr");
   const status = msg.success ? "OK" : "ERRO";
   const result = msg.success ? `${msg.final_mbps} Mbps` : (msg.error || "Falha");
@@ -473,6 +488,7 @@ socket.on("system_status", (msg) => {
 });
 
 socket.on("remote_system_status", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
   if (!remoteCpuVal || !remoteCpuBar || !remoteRamVal || !remoteRamBar || !remoteRamDetails) return;
 
   if (msg.disabled) {
@@ -502,3 +518,5 @@ socket.on("remote_system_status", (msg) => {
 
 resetRemoteSystemStats();
 loadInterfaces().catch((err) => log(`Falha ao carregar interfaces: ${err.message}`));
+
+

@@ -8,3 +8,7 @@ services:
     restart: unless-stopped
     environment:
       - SECRET_KEY=change-me-in-production
+      - ENABLE_NIC_TUNING=0
+      - ENABLE_SYSCTL_TUNING=0
+      - ENABLE_POLICY_ROUTING=1
+      - ALLOW_VIRTUAL_INTERFACES=1
