@@ -7,6 +7,7 @@ from collections import deque
 import ipaddress
 import os
 import re
+import signal
 import socket
 import subprocess
 import threading
@@ -61,6 +62,8 @@ class TestTask:
 
     sid: str
     run_id: str
+    server_ip: str
+    port: int
     interface: str
     mode: str
     process: subprocess.Popen
@@ -86,6 +89,58 @@ def emit_run_event(event: str, payload: dict, sid: str, run_id: str) -> None:
     socketio.emit(event, message, room=sid)
 
 
+def terminate_process_tree(process: subprocess.Popen, grace_s: float = 8.0) -> bool:
+    """Encerra processo (e filhos) com TERM e fallback para KILL."""
+
+    if process.poll() is not None:
+        return True
+
+    try:
+        # Linux: start_new_session=True permite finalizar todo o process-group.
+        os.killpg(process.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+    try:
+        process.wait(timeout=grace_s)
+        return True
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+    try:
+        process.wait(timeout=3)
+    except Exception:
+        pass
+    return process.poll() is not None
+
+
+def stop_test_tasks(tasks: List[Tuple[str, "TestTask"]]) -> int:
+    stopped = 0
+    for tid, task in tasks:
+        ok = terminate_process_tree(task.process)
+        if ok:
+            stopped += 1
+        else:
+            print(f"Falha ao encerrar processo do teste {tid}", flush=True)
+
+    with TEST_LOCK:
+        for tid, _task in tasks:
+            ACTIVE_TESTS.pop(tid, None)
+
+    return stopped
+
+
 def stop_active_tests_for_sid(sid: str) -> int:
     """Encerra processos ativos de teste associados a uma sessao Socket.IO."""
 
@@ -95,26 +150,95 @@ def stop_active_tests_for_sid(sid: str) -> int:
     if not targets:
         return 0
 
-    for tid, task in targets:
-        try:
-            task.process.terminate()
-            task.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            print(f"Teste {tid} travou. ForÃ§ando kill...", flush=True)
-            try:
-                task.process.kill()
-                task.process.wait(timeout=3)
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"Erro ao parar teste {tid}: {exc}", flush=True)
+    return stop_test_tasks(targets)
+
+
+def stop_all_active_tests() -> int:
+    """Encerra qualquer teste ativo, independente da sessao."""
 
     with TEST_LOCK:
-        for tid, task in list(ACTIVE_TESTS.items()):
-            if task.sid == sid:
-                ACTIVE_TESTS.pop(tid, None)
+        targets = list(ACTIVE_TESTS.items())
+    if not targets:
+        return 0
+    return stop_test_tasks(targets)
 
-    return len(targets)
+
+def cleanup_orphan_runner_processes() -> int:
+    """Finaliza processos runner/iperf cliente que ficaram fora do controle do ACTIVE_TESTS."""
+
+    tracked_pids = set()
+    with TEST_LOCK:
+        for task in ACTIVE_TESTS.values():
+            tracked_pids.add(task.process.pid)
+
+    victims = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            pid = int(proc.info.get("pid") or 0)
+            if pid <= 0 or pid in tracked_pids:
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            if not cmdline:
+                continue
+            if "iperf-runner.sh" in cmdline or ("iperf3" in cmdline and " -c " in f" {cmdline} "):
+                victims.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    stopped = 0
+    for proc in victims:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    for proc in victims:
+        try:
+            proc.wait(timeout=3)
+            stopped += 1
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+                stopped += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                pass
+    return stopped
+
+
+def reset_policy_state(interface: str) -> None:
+    """Remove regras/tabelas residuais de policy routing da interface."""
+
+    if os.environ.get("ENABLE_POLICY_ROUTING", "1") != "1":
+        return
+
+    ifindex_out = run_command(["cat", f"/sys/class/net/{interface}/ifindex"]).strip()
+    if not ifindex_out.isdigit():
+        return
+
+    ifindex = int(ifindex_out)
+    table_id = ifindex + 1000
+    rule_pref = 20000 + ifindex
+
+    # Remove todas as regras com o mesmo pref (nao apenas uma).
+    for _ in range(8):
+        result = subprocess.run(
+            ["ip", "rule", "del", "pref", str(rule_pref)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            break
+
+    subprocess.run(
+        ["ip", "route", "flush", "table", str(table_id)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    Path(f"/tmp/iperf-runner-{interface}.count").unlink(missing_ok=True)
+    Path(f"/tmp/iperf-runner-{interface}.lock").unlink(missing_ok=True)
 
 
 def stop_remote_monitor(sid: str, expected_event: Optional[threading.Event] = None) -> None:
@@ -369,20 +493,24 @@ def run_single_test(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
 
         with TEST_LOCK:
             ACTIVE_TESTS[task_id] = TestTask(
-                sid=sid, run_id=run_id, interface=interface, mode=mode, process=process
+                sid=sid,
+                run_id=run_id,
+                server_ip=server_ip,
+                port=port,
+                interface=interface,
+                mode=mode,
+                process=process,
             )
 
         assert process.stdout is not None
         for line in process.stdout:
             if not is_current_run(sid, run_id):
-                try:
-                    process.terminate()
-                except Exception:
-                    pass
+                terminate_process_tree(process, grace_s=3)
                 break
             line = line.strip()
             recent_lines.append(line)
@@ -538,23 +666,41 @@ def setup_remote_server(ip, user, password, ports):
     try:
         print(f"Conectando ao servidor remoto {ip} via SSH...", flush=True)
         client.connect(ip, username=user, password=password, timeout=5)
-        
+
+        ports = sorted({int(p) for p in ports})
         running_ports = []
         for port in ports:
-            # Mata qualquer processo jÃ¡ rodando nesta porta para garantir estado limpo
-            # fuser -k -n tcp PORT ou pkill -f "iperf3 -s -p PORT"
-            # O comando abaixo mata processos ouvindo na porta especificada.
-            kill_cmd = f"fuser -k -n tcp {port} || true"
-            client.exec_command(kill_cmd)
-            time.sleep(0.5)
+            # Garante que a porta esteja livre antes de subir novo daemon.
+            kill_cmd = (
+                f"fuser -k -n tcp {port} >/dev/null 2>&1 || true; "
+                f"pkill -f 'iperf3 -s -p {port}' >/dev/null 2>&1 || true; "
+                f"for i in $(seq 1 20); do "
+                f"ss -ltn sport = :{port} | grep -q LISTEN || break; "
+                f"sleep 0.2; "
+                f"done"
+            )
+            _kin, _kout, _kerr = client.exec_command(kill_cmd)
+            _ = _kin, _kerr
+            _kout.channel.recv_exit_status()
 
-            # Inicia iperf3 em background (daemon)
-            start_cmd = f"nohup iperf3 -s -p {port} -D > /dev/null 2>&1 &"
+            start_cmd = f"iperf3 -s -p {port} -D"
             stdin, stdout, stderr = client.exec_command(start_cmd)
+            _ = stdin, stderr
             exit_status = stdout.channel.recv_exit_status()
-            
+
             if exit_status == 0:
-                running_ports.append(port)
+                verify_cmd = (
+                    f"for i in $(seq 1 20); do "
+                    f"ss -ltn sport = :{port} | grep -q LISTEN && exit 0; "
+                    f"sleep 0.2; "
+                    f"done; exit 1"
+                )
+                _in, _out, _err = client.exec_command(verify_cmd)
+                verify_status = _out.channel.recv_exit_status()
+                if verify_status == 0:
+                    running_ports.append(port)
+                else:
+                    print(f"Porta {port} nao entrou em LISTEN apos start.", flush=True)
             else:
                 print(f"Falha ao iniciar iperf3 na porta {port} (remoto)", flush=True)
         missing_ports = sorted(set(ports) - set(running_ports))
@@ -664,6 +810,17 @@ def get_interfaces():
     return jsonify({"interfaces": list_interfaces()})
 
 
+@socketio.on("disconnect")
+def on_disconnect():
+    sid = request.sid
+    stop_remote_monitor(sid)
+    stopped = stop_active_tests_for_sid(sid)
+    with RUN_STATE_LOCK:
+        RUN_STATE.pop(sid, None)
+    if stopped > 0:
+        print(f"Disconnect {sid}: encerrados {stopped} teste(s) ativos.", flush=True)
+
+
 @socketio.on("start_test")
 def start_test(payload: dict):
     """Inicia testes simultÃ¢neos de acordo com interfaces e modo selecionados."""
@@ -693,9 +850,16 @@ def start_test(payload: dict):
     duration = int(payload["duration"])
     total_duration = duration * 2 if selected_mode == "both_sequential" else duration
 
-    stopped = stop_active_tests_for_sid(sid)
-    if stopped > 0:
-        print(f"Sessao {sid}: encerrados {stopped} teste(s) ativos antes da nova execucao.", flush=True)
+    stopped = stop_all_active_tests()
+    orphan_killed = cleanup_orphan_runner_processes()
+    for iface in interfaces:
+        reset_policy_state(iface)
+
+    if stopped > 0 or orphan_killed > 0:
+        print(
+            f"Pre-run cleanup: encerrados={stopped}, orfaos_encerrados={orphan_killed}, sid={sid}",
+            flush=True,
+        )
         emit_run_event(
             "test_error",
             {

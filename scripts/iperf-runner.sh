@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r6"
+RUNNER_REV="2026-02-11-r7"
 ENABLE_NIC_TUNING="${ENABLE_NIC_TUNING:-0}"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
@@ -108,7 +108,7 @@ cleanup() {
   if [[ "$active_count" -le 0 ]]; then
     rm -f "$COUNT_FILE"
     echo "DEBUG: Restaurando estado original de $IFACE..." >&2
-    ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
+    while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
   else
     echo "$active_count" > "$COUNT_FILE"
@@ -135,7 +135,7 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
 
   # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
   if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
-    ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
+    while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
     ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
   fi
