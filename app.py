@@ -358,21 +358,13 @@ def run_sequential_both(
     base_port: int,
     parallel: int,
 ) -> None:
-    """Executa upload em todas as interfaces, espera, depois download."""
+    """Executa upload e download por interface, sem concorrencia entre interfaces."""
 
     for phase_mode in ["upload", "download"]:
         socketio.emit("phase_started", {"mode": phase_mode}, room=sid)
-        threads = []
         for idx, iface in enumerate(interfaces):
             port = base_port + idx
-            t = threading.Thread(
-                target=run_single_test,
-                args=(server_ip, duration, iface, phase_mode, sid, port, parallel),
-            )
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
+            run_single_test(server_ip, duration, iface, phase_mode, sid, port, parallel)
 
 
 def run_parallel_tests(

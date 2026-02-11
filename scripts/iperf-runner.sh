@@ -85,7 +85,6 @@ if [[ -f "$COUNT_FILE" ]]; then
 fi
 ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
 echo "$ACTIVE_COUNT" > "$COUNT_FILE"
-flock -u 9
 
 # Evita recriar regras a cada fluxo e reduz interferencia entre uploads/downloads simultaneos.
 if ! ip rule show | grep -q "^${RULE_PREF_FROM}:"; then
@@ -129,6 +128,8 @@ if [[ -n "$GATEWAY" ]]; then
 else
   ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 fi
+
+flock -u 9
 
 # ---------- Tunings de alta performance (rede) ----------
 sysctl -w net.core.rmem_max=33554432 >/dev/null 2>&1 || true
