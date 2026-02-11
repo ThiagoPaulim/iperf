@@ -64,8 +64,9 @@ ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
 ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
 # Garante que as interrupcoes de hardware nao fiquem presas em um so core (RPS).
 RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
-if [[ -w "$RPS_FILE" ]]; then
-  echo "f" > "$RPS_FILE" 2>/dev/null || true
+if [[ -e "$RPS_FILE" ]]; then
+  # Em alguns ambientes o sysfs e read-only; suprimimos erro de redirecionamento do shell.
+  { echo "f" > "$RPS_FILE"; } 2>/dev/null || true
 fi
 
 # ---------- Policy routing por interface ----------
@@ -73,7 +74,6 @@ fi
 IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
 TABLE_ID=$((IFINDEX + 1000))
 RULE_PREF_FROM=$((20000 + IFINDEX))
-RULE_PREF_OIF=$((30000 + IFINDEX))
 LOCK_FILE="/tmp/iperf-runner-${IFACE}.lock"
 COUNT_FILE="/tmp/iperf-runner-${IFACE}.count"
 
@@ -91,9 +91,6 @@ flock -u 9
 if ! ip rule show | grep -q "^${RULE_PREF_FROM}:"; then
   ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
 fi
-if ! ip rule show | grep -q "^${RULE_PREF_OIF}:"; then
-  ip rule add oif "$IFACE" table "$TABLE_ID" pref "$RULE_PREF_OIF" 2>/dev/null || true
-fi
 
 cleanup() {
   flock 9
@@ -110,7 +107,6 @@ cleanup() {
     rm -f "$COUNT_FILE"
     echo "DEBUG: Restaurando estado original de $IFACE..." >&2
     ip rule del pref "$RULE_PREF_FROM" 2>/dev/null || true
-    ip rule del pref "$RULE_PREF_OIF" 2>/dev/null || true
     ip route flush table "$TABLE_ID" 2>/dev/null || true
   else
     echo "$active_count" > "$COUNT_FILE"
@@ -128,6 +124,7 @@ if [[ -n "$SUBNET" ]]; then
 fi
 
 if [[ -n "$GATEWAY" ]]; then
+  ip route replace "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
   ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 else
   ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true

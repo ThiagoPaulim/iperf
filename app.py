@@ -429,8 +429,14 @@ def setup_remote_server(ip, user, password, ports):
                 running_ports.append(port)
             else:
                 print(f"Falha ao iniciar iperf3 na porta {port} (remoto)", flush=True)
-
-        return True, f"ServiÃ§os iniciados nas portas: {running_ports}"
+        missing_ports = sorted(set(ports) - set(running_ports))
+        if missing_ports:
+            return (
+                False,
+                "Falha ao iniciar iperf3 em todas as portas. "
+                f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports}",
+            )
+        return True, f"ServiÃ§os iniciados nas portas: {sorted(running_ports)}"
 
     except Exception as e:
         return False, f"Erro SSH: {str(e)}"
