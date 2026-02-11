@@ -90,14 +90,14 @@ fi
 
 # ---------- Policy routing ----------
 
-# Gera um table ID baseado no hash MD5 do nome da interface para evitar colisões.
-# Usa range 2000-5000 para evitar conflitos com outras tabelas do sistema.
- HEX_HASH=$(echo -n "$IFACE" | md5sum | awk '{print $1}')
-SHORT_HEX=${HEX_HASH:0:5} # 5 hex digits
-DEC_VAL=$((16#$SHORT_HEX))
-TABLE_ID=$(( (DEC_VAL % 3000) + 2000 ))
+# ---------- Policy routing ----------
 
-echo "DEBUG: Interface '$IFACE' -> Table ID: $TABLE_ID" >&2
+# Usamos a própria PORTA do iperf como ID da tabela de roteamento.
+# Como o app.py garante que cada fluxo simultâneo tem uma porta única,
+# isso garante que não haverá colisão de tabela entre interfaces ou fluxos.
+TABLE_ID="$PORT"
+
+echo "DEBUG: Interface '$IFACE' (Port $PORT) -> Table ID: $TABLE_ID" >&2
 
 # Flag para controlar se criamos as regras (para cleanup).
 RULES_CREATED=0
