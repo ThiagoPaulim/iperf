@@ -357,9 +357,18 @@ def start_test(payload: dict):
     interfaces = payload["interfaces"]
     base_port = int(payload.get("base_port", 5201))
     parallel = int(payload.get("parallel", 4))
+    selected_mode = payload["mode"]
     
-    # Portas necessárias (uma por interface)
-    needed_ports = [base_port + i for i in range(len(interfaces))]
+    # Portas necessárias
+    # Se modo for 'both' (simultâneo), precisamos de 2 portas por interface (uma pra up, uma pra down).
+    # Em 'both_sequential', reutilizamos a mesma porta pois as fases não se sobrepõem.
+    needed_ports = []
+    if selected_mode == "both":
+        total_slots = len(interfaces) * 2
+        needed_ports = [base_port + i for i in range(total_slots)]
+    else:
+        # upload, download e both_sequential usam 1 porta por interface
+        needed_ports = [base_port + i for i in range(len(interfaces))]
 
     # Se configuração automática estiver ativa, tenta configurar o servidor antes
     if configure_server:
