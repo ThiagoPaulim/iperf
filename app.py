@@ -876,7 +876,12 @@ def monitor_remote_system(
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
+
+
+@app.route("/r10b")
+def index_r10b():
+    return render_template("index.html", app_rev=APP_REV, runner_rev=get_runner_revision())
 
 
 @app.after_request
@@ -1027,6 +1032,7 @@ def start_test(payload: dict):
         {
             "interfaces": interfaces,
             "modes": modes,
+            "app_rev": APP_REV,
             "runner_rev": get_runner_revision(),
             "flow_retries": FLOW_RETRIES,
         },

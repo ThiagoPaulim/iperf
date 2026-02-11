@@ -458,6 +458,9 @@ socket.on("test_started", (msg) => {
   receivedResults = 0;
   showToast(`Teste iniciado! Interfaces: ${msg.interfaces.join(", ")}`, "success");
   log(`Testes iniciados para interfaces: ${msg.interfaces.join(", ")}. Modos: ${msg.modes.join(", ")}`);
+  if (msg.app_rev) {
+    log(`App revision: ${msg.app_rev}`);
+  }
   if (msg.runner_rev) {
     log(`Runner revision: ${msg.runner_rev}`);
   }
