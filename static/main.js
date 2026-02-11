@@ -416,6 +416,9 @@ socket.on("test_started", (msg) => {
   if (msg.runner_rev) {
     log(`Runner revision: ${msg.runner_rev}`);
   }
+  if (typeof msg.flow_retries === "number") {
+    log(`Retentativas por fluxo: ${msg.flow_retries}`);
+  }
   createInterfaceGauges(msg.interfaces, msg.modes);
 });
 

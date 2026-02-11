@@ -54,6 +54,10 @@ EXCLUDED_IFACE_PREFIXES = (
     "services",
 )
 ALLOW_VIRTUAL_INTERFACES = os.environ.get("ALLOW_VIRTUAL_INTERFACES", "1") == "1"
+try:
+    FLOW_RETRIES = max(0, min(4, int(os.environ.get("FLOW_RETRIES", "2"))))
+except ValueError:
+    FLOW_RETRIES = 2
 
 
 def get_runner_revision() -> str:
@@ -330,6 +334,10 @@ def is_transient_iperf_error(text: str) -> bool:
         "server is busy",
         "resource temporarily unavailable",
         "temporary failure",
+        "sem rota valida",
+        "rota final nao saiu",
+        "network is down",
+        "cannot assign requested address",
     )
     return any(p in t for p in transient_patterns)
 
@@ -481,7 +489,8 @@ def run_single_test(
     run_id: str,
     port: int,
     parallel: int,
-    retry_left: int = 1,
+    retry_left: int = FLOW_RETRIES,
+    attempt: int = 1,
 ) -> None:
     """Executa um Ãºnico fluxo iperf e envia atualizaÃ§Ãµes em tempo real."""
 
@@ -613,12 +622,13 @@ def run_single_test(
         else:
             error_tail = " | ".join([item for item in list(recent_lines)[-10:] if item])
             if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
+                wait_s = min(3.0, 0.7 + (attempt * 0.6))
                 emit_run_event(
                     "test_error",
                     {
                         "message": (
                             f"Falha transitoria em {interface} ({mode}) na porta {port}. "
-                            "Retentando automaticamente..."
+                            f"Retentando automaticamente ({attempt}/{FLOW_RETRIES + 1}) em {wait_s:.1f}s..."
                         ),
                         "fatal": False,
                     },
@@ -626,7 +636,7 @@ def run_single_test(
                     run_id,
                 )
                 reset_policy_state(interface)
-                time.sleep(0.7)
+                time.sleep(wait_s)
                 run_single_test(
                     server_ip,
                     duration,
@@ -637,6 +647,7 @@ def run_single_test(
                     port,
                     parallel,
                     retry_left=retry_left - 1,
+                    attempt=attempt + 1,
                 )
                 return
             emit_run_event(
@@ -1000,7 +1011,12 @@ def start_test(payload: dict):
 
     emit_run_event(
         "test_started",
-        {"interfaces": interfaces, "modes": modes, "runner_rev": get_runner_revision()},
+        {
+            "interfaces": interfaces,
+            "modes": modes,
+            "runner_rev": get_runner_revision(),
+            "flow_retries": FLOW_RETRIES,
+        },
         sid,
         run_id,
     )
