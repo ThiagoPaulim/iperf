@@ -112,39 +112,41 @@ cleanup() {
 trap cleanup EXIT
 
 # Só cria policy routing se encontrou um gateway.
-if [[ -n "$GATEWAY" ]]; then
-  # Remove regras antigas que possam existir para este IP/tabela a força bruta
-  ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-  # Remove regra por prioridade se existir (cleanup antigo pode ter falhado)
-  ip rule del pref 1000 table "$TABLE_ID" 2>/dev/null || true
-  
-  ip route flush table "$TABLE_ID" 2>/dev/null || true
+# Remove regras antigas que possam existir para este IP/tabela a força bruta
+ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+# Remove regra por prioridade se existir (cleanup antigo pode ter falhado)
+ip rule del pref 1000 table "$TABLE_ID" 2>/dev/null || true
 
+ip route flush table "$TABLE_ID" 2>/dev/null || true
+
+# Adiciona regra com Prioridade alta (1000)
+ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
+
+if [[ -n "$GATEWAY" ]]; then
   # Adiciona rota na tabela dedicada.
   ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-
-  # Adiciona regra com Prioridade alta (1000)
-  # Adiciona regra com Prioridade alta (1000)
-  ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
   
   # ROTAS FORÇADAS:
   # Adiciona rota específica (/32) para o IP do Servidor nesta tabela.
-  # Isso tem precedência sobre rotas genéricas e ajuda a "travar" a saída.
   ip route add "$SERVER_IP" via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 
-  # Força limpeza do cache de rotas para garantir que as novas regras peguem imediatamente
-  ip route flush cache 2>/dev/null || true
-
-  RULES_CREATED=1
-
-  # DEBUG: Verifica qual interface o Kernel decidiu usar para este destino+origem
-  ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" iif "$IFACE" 2>/dev/null || echo "Erro rota")
-  echo "DEBUG_ROUTE: $ROUTE_DEBUG"
-  
-  echo "DEBUG: Policy routing criado (Table $TABLE_ID): from $BIND_IP via $GATEWAY dev $IFACE"
+  echo "DEBUG: Policy routing (Gateway): from $BIND_IP via $GATEWAY dev $IFACE"
 else
-  echo "AVISO: Gateway não encontrado para $IFACE. Usando roteamento padrão." >&2
+  # AVISO: Gateway não encontrado. Pode ser conexão direta (Link Local).
+  # Tenta adicionar rota direta para o servidor via interface.
+  ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  
+  echo "DEBUG: Policy routing (Direct/Local): from $BIND_IP dev $IFACE"
 fi
+
+# Força limpeza do cache de rotas para garantir que as novas regras peguem imediatamente
+ip route flush cache 2>/dev/null || true
+
+RULES_CREATED=1
+
+# DEBUG: Verifica qual interface o Kernel decidiu usar para este destino+origem
+ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" iif "$IFACE" 2>/dev/null || echo "Erro rota")
+echo "DEBUG_ROUTE: $ROUTE_DEBUG"
 
 # ---------- Métricas Iniciais (Ping) ----------
 
@@ -161,7 +163,7 @@ echo "[METRICS] Ping: $PING_AVG ms"
 
 # Adicionamos -P (parallel) e --forceflush
 # Também adicionamos -w 1M (janela TCP) por padrão para ajudar performance
-CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -P "$PARALLEL" --forceflush)
+CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -w 1M -P "$PARALLEL" --forceflush)
 if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi
