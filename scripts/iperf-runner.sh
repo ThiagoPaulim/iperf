@@ -68,10 +68,9 @@ sysctl -w net.ipv4.conf."$IFACE".arp_ignore=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf."$IFACE".arp_announce=2 >/dev/null 2>&1 || true
 
-# RP Buffer = 0 ou 2: Permitir roteamento assimétrico se necessário, mas respeitando as tabelas.
-# 2 (Loose mode) é geralmente mais seguro para multi-wan.
-sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf."$IFACE".rp_filter=2 >/dev/null 2>&1 || true
+# RP Buffer = 0: Desabilitar RP filter para evitar drop de pacotes em interfaces secundárias.
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".rp_filter=0 >/dev/null 2>&1 || true
 
 # --------------------------------------------------------
 
@@ -122,21 +121,29 @@ ip route flush table "$TABLE_ID" 2>/dev/null || true
 # Adiciona regra com Prioridade alta (1000)
 ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
 
-if [[ -n "$GATEWAY" ]]; then
-  # Adiciona rota na tabela dedicada.
-  ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  
-  # ROTAS FORÇADAS:
-  # Adiciona rota específica (/32) para o IP do Servidor nesta tabela.
-  ip route add "$SERVER_IP" via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+# Adiciona a Subrede local na tabela para evitar que tráfego local use o gateway
+if [[ -n "$SUBNET" ]]; then
+  # Garante que a rota da subrede exista na tabela customizada como rota de link
+  ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+fi
 
-  echo "DEBUG: Policy routing (Gateway): from $BIND_IP via $GATEWAY dev $IFACE"
+# Adiciona rota específica para o servidor
+# Verifica se o servidor é alcançável diretamente (sem via) na interface original
+IS_LOCAL=$(ip route get "$SERVER_IP" dev "$IFACE" 2>/dev/null | grep -v "via" || true)
+
+if [[ -n "$IS_LOCAL" ]]; then
+  # Servidor na mesma rede local: rota direta pela interface
+  ip route add "$SERVER_IP" dev "$IFACE" scope link table "$TABLE_ID" 2>/dev/null || true
+  echo "DEBUG: Policy routing (Local): $SERVER_IP dev $IFACE (Table $TABLE_ID)"
+elif [[ -n "$GATEWAY" ]]; then
+  # Servidor remoto: via Gateway
+  ip route add "$SERVER_IP" via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+  echo "DEBUG: Policy routing (Gateway): $SERVER_IP via $GATEWAY dev $IFACE (Table $TABLE_ID)"
 else
-  # AVISO: Gateway não encontrado. Pode ser conexão direta (Link Local).
-  # Tenta adicionar rota direta para o servidor via interface.
+  # Fallback: tenta direto pela interface
   ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-  
-  echo "DEBUG: Policy routing (Direct/Local): from $BIND_IP dev $IFACE"
+  echo "DEBUG: Policy routing (Fallback Direct): $SERVER_IP dev $IFACE (Table $TABLE_ID)"
 fi
 
 # Força limpeza do cache de rotas para garantir que as novas regras peguem imediatamente
@@ -163,7 +170,9 @@ echo "[METRICS] Ping: $PING_AVG ms"
 
 # Adicionamos -P (parallel) e --forceflush
 # Também adicionamos -w 1M (janela TCP) por padrão para ajudar performance
-CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -w 1M -P "$PARALLEL" --forceflush)
+# Removemos o limite de janela (-w 1M) para permitir o auto-tuning do Kernel/iperf3,
+# essencial para atingir velocidades acima de 1Gbps em redes de alta performance.
+CMD=(iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -P "$PARALLEL" --forceflush)
 if [[ "$MODE" == "download" ]]; then
   CMD+=( -R )
 fi

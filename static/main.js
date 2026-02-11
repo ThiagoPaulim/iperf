@@ -16,7 +16,15 @@ const throughputCtx = document.getElementById("throughputChart");
 
 // Variáveis Globais
 const interfaceGauges = {};
+const interfaceSpeeds = {};
 const latestThroughput = { upload: {}, download: {} };
+
+function parseSpeed(speedStr) {
+  if (!speedStr || speedStr === "N/A") return 1000;
+  // Extrai o número de strings como "2500Mb/s", "10000Mb/s", etc.
+  const match = speedStr.match(/(\d+)/);
+  return match ? parseInt(match[1]) : 1000;
+}
 
 function log(msg) {
   logBox.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
@@ -114,7 +122,9 @@ const centerTextPlugin = {
 
 Chart.register(centerTextPlugin);
 
-function createGauge(ctx, label) {
+function createGauge(ctx, label, maxSpeed = 1000) {
+  // Ajusta o maxSpeed para ser pelo menos o mbps atual ou 1000
+  const displayMax = Math.max(maxSpeed, 1000);
   // label vem como "eth0 upload". Vamos extrair apenas o modo.
   const mode = label.split(' ').pop().toUpperCase();
 
@@ -123,7 +133,7 @@ function createGauge(ctx, label) {
     data: {
       labels: ["Atual", "Restante"],
       datasets: [{
-        data: [0, 1000],
+        data: [0, displayMax],
         backgroundColor: (context) => {
           const chart = context.chart;
           const { ctx, chartArea } = chart;
@@ -157,6 +167,8 @@ function createGauge(ctx, label) {
         tooltip: { enabled: false },
         centerText: { text: "0.00" } // Estado inicial
       },
+      // Passamos o maxSpeed para ser acessível no update
+      maxSpeed: displayMax
     },
   });
 }
@@ -208,25 +220,19 @@ function createInterfaceGauges(interfaces, modes) {
     const pairDiv = document.createElement("div");
     pairDiv.className = "gauge-pair";
 
+    const maxSpeed = interfaceSpeeds[iface] || 1000;
     const gauges = {};
 
     modes.forEach((mode) => {
       const modeDiv = document.createElement("div");
       modeDiv.className = "gauge-item";
 
-      // O label "Upload/Download" agora é gerenciado pelo próprio gauge title (chartjs),
-      // mas podemos manter o header h4 se quisermos redundância ou controle de layout.
-      // A request do usuário pedia "UPLOAD no meio dos arcos". 
-      // Com o Gauge novo, o Title é "UPLOAD" no topo e o valor no meio.
-      // Vou esconder este h4 via CSS ou removê-lo aqui para ficar mais limpo.
-      // Decisão: Remover o h4 HTML e deixar só o Chart Title.
-
       const canvas = document.createElement("canvas");
       canvas.id = `gauge-${iface}-${mode}`;
       modeDiv.appendChild(canvas);
 
       pairDiv.appendChild(modeDiv);
-      gauges[mode] = createGauge(canvas, `${iface} ${mode}`);
+      gauges[mode] = createGauge(canvas, `${iface} ${mode}`, maxSpeed);
     });
 
     wrapper.appendChild(pairDiv);
@@ -237,7 +243,12 @@ function createInterfaceGauges(interfaces, modes) {
 
 function updateGauge(gauge, label, mbps) {
   const rounded = (Math.round(mbps * 100) / 100).toFixed(2);
-  gauge.data.datasets[0].data = [mbps, Math.max(0, 1000 - mbps)];
+  const maxSpeed = gauge.options.maxSpeed || 1000;
+
+  // Se o throughput ultrapassar o maxSpeed (ex: burst), ajustamos o gráfico
+  const currentMax = Math.max(maxSpeed, mbps);
+
+  gauge.data.datasets[0].data = [mbps, Math.max(0, currentMax - mbps)];
   gauge.options.plugins.centerText.text = rounded;
   gauge.update();
 }
@@ -248,6 +259,7 @@ async function loadInterfaces() {
 
   interfacesTable.innerHTML = "";
   data.interfaces.forEach((iface) => {
+    interfaceSpeeds[iface.name] = parseSpeed(iface.speed);
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><input type="checkbox" class="iface-check" value="${iface.name}" /></td>
