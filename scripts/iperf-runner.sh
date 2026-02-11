@@ -54,52 +54,39 @@ fi
 # Obtém a subnet/prefixo da interface.
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
-# ---------- Tunings de Performance de Kernel (Rede de Alta Velocidade) ----------
-# Estes tunings preparam o kernel para lidar com 2.5Gbps+ e múltiplas streams.
+# ---------- Tunings de Hardware e Kernel (Extremos) ----------
 
-echo "Otimizando Kernel para Alta Performance..." >&2
+echo "Aplicando tunings de hardware e isolamento VRF..." >&2
 
-# Aumenta os buffers de socket TCP (Essencial para > 1Gbps)
-sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1 || true
-sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.tcp_rmem="4096 87380 16777216" >/dev/null 2>&1 || true
-sysctl -w net.ipv4.tcp_wmem="4096 65536 16777216" >/dev/null 2>&1 || true
+# 1. Otimiza filas de transmissão da interface para prevenir gargalos
+ip link set dev "$IFACE" txqueuelen 10000 2>/dev/null || true
 
-# Melhora a fila de pacotes e backlog
-sysctl -w net.core.netdev_max_backlog=10000 >/dev/null 2>&1 || true
-sysctl -w net.core.somaxconn=4096 >/dev/null 2>&1 || true
+# 2. Tunings de processamento de pacotes (Kernel Softnet)
+sysctl -w net.core.netdev_budget=600 >/dev/null 2>&1 || true
+sysctl -w net.core.netdev_budget_usecs=8000 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.udp_rmem_min=16384 >/dev/null 2>&1 || true
 
-# Ativa BBR se disponível (Melhor algoritmo de congestionamento do Google)
-if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
-fi
+# 3. Garante que o isolamento ARP seja absoluto
+sysctl -w net.ipv4.conf.all.arp_ignore=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".arp_ignore=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf."$IFACE".arp_announce=2 >/dev/null 2>&1 || true
 
-# Otimização de ARP para evitar lentidão em redes grandes
-sysctl -w net.ipv4.neigh.default.gc_thresh1=1024 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.neigh.default.gc_thresh2=2048 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.neigh.default.gc_thresh3=4096 >/dev/null 2>&1 || true
+# ---------- Isolamento via VRF (Virtual Routing and Forwarding) ----------
+# Esta é a técnica mais avançada para garantir que o tráfego NUNCA saia por outra interface,
+# mesmo que estejam na mesma sub-rede e compartilhem o mesmo gateway.
 
-# ---------- Tuning de Sysctl para Isolamento (Multi-Homing) ----------
+VRF_NAME="vrf-$IFACE"
+TABLE_ID=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
+TABLE_ID=$((TABLE_ID + 1000))
 
-# ARP Filter = 1: Essencial para interfaces na mesma sub-rede
-sysctl -w net.ipv4.conf.all.arp_filter=1 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf."$IFACE".arp_filter=1 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf."$IFACE".rp_filter=0 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+# Limpeza e Criação da VRF
+ip link del "$VRF_NAME" 2>/dev/null || true
+ip link add "$VRF_NAME" type vrf table "$TABLE_ID"
+ip link set "$VRF_NAME" up
+ip link set dev "$IFACE" master "$VRF_NAME"
 
-# --------------------------------------------------------
-
-# Tenta descobrir o gateway.
-GATEWAY=$(ip -4 route show dev "$IFACE" default 2>/dev/null | awk '/default/{print $3}' | head -n1)
-[[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" | awk '/via/{print $3}' | head -n1)
-
-# ---------- Policy routing (Isolamento de Interface via FWMARK) ----------
-
-IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
-TABLE_ID=$((IFINDEX + 1000))
-MARK_ID=$TABLE_ID
-
-echo "DEBUG: Configurando Tabela $TABLE_ID e Mark $MARK_ID para $IFACE (IP: $BIND_IP)" >&2
+echo "DEBUG: Interface $IFACE vinculada à VRF $VRF_NAME (Tabela $TABLE_ID)" >&2
 
 cleanup() {
   local active_runners
@@ -110,48 +97,52 @@ cleanup() {
   fi
 
   if [[ "$active_runners" -le 1 ]]; then
-    echo "DEBUG: Liberando interface $IFACE..." >&2
-    ip rule del fwmark "$MARK_ID" table "$TABLE_ID" 2>/dev/null || true
-    ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-    ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+    echo "DEBUG: Restaurando interface $IFACE (Removendo VRF)..." >&2
+    ip link set dev "$IFACE" nomaster 2>/dev/null || true
+    ip link del "$VRF_NAME" 2>/dev/null || true
     ip route flush table "$TABLE_ID" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
 
-# Limpa estado anterior (Garante isolamento)
-ip rule del fwmark "$MARK_ID" table "$TABLE_ID" 2>/dev/null || true
-ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
-ip route flush table "$TABLE_ID" 2>/dev/null || true
+# Obtém gateway oficial (agora deve ser inserido na tabela da VRF)
+GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
+[[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
 
-# 1. Rota Local e Gateway
+# Monta rotas EXCLUSIVAS na VRF
+ip route flush table "$TABLE_ID" 2>/dev/null || true
 if [[ -n "$SUBNET" ]]; then
     ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
 if [[ -n "$GATEWAY" ]]; then
-    ip route add default via "$GATEWAY" dev "$IFACE" src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+    ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 else
-    ip route add "$SERVER_IP" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+    ip route add "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 fi
 
-# 2. Regras de Política Triplas (Cinturão e Suspensório)
-# - Baseado no IP de origem
-# - Baseado na Interface de saída
-# - Baseado no FW Mark (Caso o kernel tente trocar a interface depois do bind)
-ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
-ip rule add oif "$IFACE" table "$TABLE_ID" pref 1001
-ip rule add fwmark "$MARK_ID" table "$TABLE_ID" pref 1002
+# ---------- Execução com CPU Pinning (Afinidade) ----------
+# Em testes multi-interface, o iperf3 pode saturar um único núcleo da CPU.
+# Distribuímos cada processo em um núcleo diferente.
 
-# 3. Força flush do cache
-ip route flush cache 2>/dev/null || true
+# Pega o número de CPUs disponíveis
+NUM_CPUS=$(nproc)
+# Usa o ifindex para escolher um core de forma determinística
+CORE_ID=$(( (TABLE_ID - 1000) % NUM_CPUS ))
 
-# DEBUG FINAL
-echo "--- TABELA $TABLE_ID ($IFACE) ---" >&2
-ip route show table "$TABLE_ID" >&2
-echo "---------------------------------" >&2
+echo "DEBUG: Executando no Core CPU $CORE_ID com Isolamento VRF" >&2
 
+# Comando iperf3 forçado a usar o dispositivo de bind e VRF
+# No iperf3 3.10+, podemos usar --bind-dev. Em outros, a VRF + -B resolve.
+CMD=(taskset -c "$CORE_ID" iperf3 -c "$SERVER_IP" -t "$DURATION" -i 1 -f m -B "$BIND_IP" -p "$PORT" -P "$PARALLEL" --forceflush)
+if [[ "$MODE" == "download" ]]; then
+  CMD+=( -R )
+fi
+
+# Execução (O isolamento VRF agora é garantido pelo kernel via master interface)
+"${CMD[@]}"
+
+# Não precisamos de ip rule manual pois a VRF encapsula o roteamento do dispositivo.
 RULES_CREATED=1
 
 # Verifica qual interface o Kernel decidiu usar para este destino+origem
