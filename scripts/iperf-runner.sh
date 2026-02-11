@@ -103,11 +103,24 @@ if [[ -n "$GATEWAY" ]]; then
   ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 
   # Adiciona regra com Prioridade alta (1000)
+  # Adiciona regra com Prioridade alta (1000)
   ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
+  
+  # ROTAS FORÇADAS:
+  # Adiciona rota específica (/32) para o IP do Servidor nesta tabela.
+  # Isso tem precedência sobre rotas genéricas e ajuda a "travar" a saída.
+  ip route add "$SERVER_IP" via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+
+  # Força limpeza do cache de rotas para garantir que as novas regras peguem imediatamente
+  ip route flush cache 2>/dev/null || true
 
   RULES_CREATED=1
 
-  echo "DEBUG: Policy routing criado (Table $TABLE_ID): from $BIND_IP via $GATEWAY dev $IFACE" >&2
+  # DEBUG: Verifica qual interface o Kernel decidiu usar para este destino+origem
+  ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" iif "$IFACE" 2>/dev/null || echo "Erro rota")
+  echo "DEBUG_ROUTE: $ROUTE_DEBUG"
+  
+  echo "DEBUG: Policy routing criado (Table $TABLE_ID): from $BIND_IP via $GATEWAY dev $IFACE"
 else
   echo "AVISO: Gateway não encontrado para $IFACE. Usando roteamento padrão." >&2
 fi
