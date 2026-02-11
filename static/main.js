@@ -261,6 +261,24 @@ async function loadInterfaces() {
   });
 }
 
+const toastContainer = document.getElementById("toastContainer");
+
+function showToast(message, type = "info") {
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+
+  toastContainer.appendChild(toast);
+
+  // Remove após 5 segundos
+  setTimeout(() => {
+    toast.style.animation = "fadeOut 0.3s forwards";
+    toast.addEventListener("animationend", () => {
+      toast.remove();
+    });
+  }, 5000);
+}
+
 configureServerCheck = document.getElementById("configureServer");
 const sshFieldsDiv = document.getElementById("sshFields");
 
@@ -281,6 +299,20 @@ startBtn.addEventListener("click", () => {
   const configureServer = configureServerCheck ? configureServerCheck.checked : false;
   const sshUser = document.getElementById("sshUser") ? document.getElementById("sshUser").value.trim() : "";
   const sshPass = document.getElementById("sshPass") ? document.getElementById("sshPass").value : "";
+
+  // Validações com Toast
+  if (!serverIp) {
+    showToast("Por favor, informe o IP do servidor.", "error");
+    return;
+  }
+  if (interfaces.length === 0) {
+    showToast("Selecione pelo menos uma interface de rede.", "error");
+    return;
+  }
+  if (configureServer && (!sshUser || !sshPass)) {
+    showToast("Preencha Usuário e Senha para configuração SSH.", "error");
+    return;
+  }
 
   resultsTable.innerHTML = "";
   if (metricsTable) {
@@ -311,8 +343,14 @@ startBtn.addEventListener("click", () => {
 });
 
 socket.on("test_started", (msg) => {
+  showToast(`Teste iniciado! Interfaces: ${msg.interfaces.join(", ")}`, "success");
   log(`Testes iniciados para interfaces: ${msg.interfaces.join(", ")}. Modos: ${msg.modes.join(", ")}`);
   createInterfaceGauges(msg.interfaces, msg.modes);
+});
+
+socket.on("test_error", (msg) => {
+  showToast(msg.message, "error");
+  log(`Erro: ${msg.message}`);
 });
 
 socket.on("phase_started", (msg) => {
