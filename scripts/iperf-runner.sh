@@ -55,24 +55,23 @@ fi
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
 # Tenta descobrir o gateway da interface.
-# Primeiro tenta a rota default especifica para este device.
+# Tenta descobrir o gateway da interface.
+# 1. Rota default específica da interface
 GATEWAY=$(ip -4 route show dev "$IFACE" default 2>/dev/null | awk '/default/{print $3}' | head -n1)
 
-# Se não encontrar, tenta o gateway da rota default geral.
-if [[ -z "$GATEWAY" ]]; then
-  GATEWAY=$(ip -4 route show default | awk '/default/{print $3}' | head -n1)
-fi
-
-# Se ainda não encontrar, tenta pegar o gateway via a subnet da interface.
+# 2. Se não encontrar, procura qualquer rota com "via" associada a esta interface (ex: DHCP routes)
 if [[ -z "$GATEWAY" ]]; then
   GATEWAY=$(ip -4 route show dev "$IFACE" | awk '/via/{print $3}' | head -n1)
 fi
+
+# NOTA: Removemos o fallback para "ip route show default" (global) pois ele causa
+# problemas em ambientes multi-wan (tenta usar gw da eth0 na eth1, falha, e sai pela eth0).
 
 # ---------- Policy routing ----------
 
 # Gera um table ID baseado no hash MD5 do nome da interface para evitar colisões.
 # Usa range 2000-5000 para evitar conflitos com outras tabelas do sistema.
-HEX_HASH=$(echo -n "$IFACE" | md5sum | awk '{print $1}')
+ HEX_HASH=$(echo -n "$IFACE" | md5sum | awk '{print $1}')
 SHORT_HEX=${HEX_HASH:0:5} # 5 hex digits
 DEC_VAL=$((16#$SHORT_HEX))
 TABLE_ID=$(( (DEC_VAL % 3000) + 2000 ))
@@ -94,25 +93,17 @@ trap cleanup EXIT
 # Só cria policy routing se encontrou um gateway.
 if [[ -n "$GATEWAY" ]]; then
   # Remove regras antigas que possam existir para este IP/tabela a força bruta
-  # Isso garante que não haja regras duplicadas ou órfãs de execuções anteriores
-  while ip rule show | grep -q "from $BIND_IP lookup $TABLE_ID"; do
-      ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
-  done
-  while ip rule show | grep -q "lookup $TABLE_ID"; do
-      ip rule del table "$TABLE_ID" 2>/dev/null || true
-  done
+  ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+  # Remove regra por prioridade se existir (cleanup antigo pode ter falhado)
+  ip rule del pref 1000 table "$TABLE_ID" 2>/dev/null || true
+  
   ip route flush table "$TABLE_ID" 2>/dev/null || true
 
   # Adiciona rota na tabela dedicada.
   ip route add default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 
-  # Adiciona rota da subnet local na tabela dedicada.
-  if [[ -n "$SUBNET" ]]; then
-    ip route add "$SUBNET" dev "$IFACE" scope link table "$TABLE_ID" 2>/dev/null || true
-  fi
-
-  # Adiciona regra: tráfego com source IP = BIND_IP usa a tabela dedicada.
-  ip rule add from "$BIND_IP" table "$TABLE_ID"
+  # Adiciona regra com Prioridade alta (1000)
+  ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
 
   RULES_CREATED=1
 
