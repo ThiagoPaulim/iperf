@@ -258,7 +258,17 @@ def list_interfaces() -> List[dict]:
     unique = {}
     for item in interfaces:
         unique[item["name"]] = item
-    return list(unique.values())
+    ordered = list(unique.values())
+
+    def sort_key(item: dict):
+        # Ordenacao natural por blocos alfanumericos.
+        # Ex.: enp2s0 < enp10s0, eth9 < eth10
+        name = item["name"].lower()
+        chunks = re.split(r"(\d+)", name)
+        return [int(chunk) if chunk.isdigit() else chunk for chunk in chunks]
+
+    ordered.sort(key=sort_key)
+    return ordered
 
 def validate_payload(payload: dict) -> Optional[str]:
     """Valida os campos recebidos do frontend."""
@@ -668,6 +678,7 @@ def start_test(payload: dict):
 
     run_id = f"{int(time.time() * 1000)}-{os.urandom(3).hex()}"
     set_run_id(sid, run_id)
+    emit_run_event("run_ack", {"status": "accepted"}, sid, run_id)
 
     # Verifica configuraÃ§Ã£o remota opcional
     configure_server = bool(payload.get("configure_server", False))
@@ -687,7 +698,10 @@ def start_test(payload: dict):
         print(f"Sessao {sid}: encerrados {stopped} teste(s) ativos antes da nova execucao.", flush=True)
         emit_run_event(
             "test_error",
-            {"message": "Reiniciando... aguardando liberaÃ§Ã£o de recursos do teste anterior."},
+            {
+                "message": "Reiniciando... aguardando liberaÃ§Ã£o de recursos do teste anterior.",
+                "fatal": False,
+            },
             sid,
             run_id,
         )
@@ -714,7 +728,12 @@ def start_test(payload: dict):
             )
             return
 
-        emit_run_event("test_error", {"message": "Configurando servidor remoto via SSH..."}, sid, run_id)
+        emit_run_event(
+            "test_error",
+            {"message": "Configurando servidor remoto via SSH...", "fatal": False},
+            sid,
+            run_id,
+        )
         success, msg = setup_remote_server(server_ip, ssh_user, ssh_pass, needed_ports)
         if not success:
             emit_run_event("test_error", {"message": f"Falha na configuraÃ§Ã£o remota: {msg}"}, sid, run_id)

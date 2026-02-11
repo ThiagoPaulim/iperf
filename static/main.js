@@ -28,10 +28,11 @@ let runStarted = false;
 let expectedResults = 0;
 let receivedResults = 0;
 let currentRunId = null;
+let awaitingRunAck = false;
 
 function isCurrentRunMessage(msg) {
   if (!msg || !Object.prototype.hasOwnProperty.call(msg, "run_id")) return true;
-  if (!currentRunId) return true;
+  if (!currentRunId) return false;
   return msg.run_id === currentRunId;
 }
 
@@ -370,6 +371,7 @@ startBtn.addEventListener("click", () => {
   expectedResults = 0;
   receivedResults = 0;
   currentRunId = null;
+  awaitingRunAck = true;
   startBtn.disabled = true;
   startBtn.textContent = "Teste em andamento...";
 
@@ -393,7 +395,17 @@ startBtn.addEventListener("click", () => {
   });
 });
 
+socket.on("run_ack", (msg) => {
+  if (!testInProgress) return;
+  currentRunId = msg.run_id || currentRunId;
+  awaitingRunAck = false;
+});
+
 socket.on("test_started", (msg) => {
+  if (awaitingRunAck && !currentRunId && msg.run_id) {
+    currentRunId = msg.run_id;
+    awaitingRunAck = false;
+  }
   if (!isCurrentRunMessage(msg)) return;
   currentRunId = msg.run_id || currentRunId;
   runStarted = true;
@@ -405,11 +417,17 @@ socket.on("test_started", (msg) => {
 });
 
 socket.on("test_error", (msg) => {
+  if (awaitingRunAck && !currentRunId && msg.run_id) {
+    currentRunId = msg.run_id;
+    awaitingRunAck = false;
+  }
   if (!isCurrentRunMessage(msg)) return;
-  showToast(msg.message, "error");
+  const fatal = msg.fatal !== false;
+  showToast(msg.message, fatal ? "error" : "info");
   log(`Erro: ${msg.message}`);
-  if (!runStarted) {
+  if (fatal && !runStarted) {
     testInProgress = false;
+    awaitingRunAck = false;
     startBtn.disabled = false;
     startBtn.textContent = "Iniciar teste";
   }
@@ -471,6 +489,7 @@ socket.on("test_result", (msg) => {
     if (expectedResults > 0 && receivedResults >= expectedResults) {
       testInProgress = false;
       runStarted = false;
+      awaitingRunAck = false;
       startBtn.disabled = false;
       startBtn.textContent = "Iniciar teste";
       log("Ciclo de testes finalizado.");
