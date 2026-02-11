@@ -16,7 +16,9 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r3"
+RUNNER_REV="2026-02-11-r5"
+ENABLE_NIC_TUNING="${ENABLE_NIC_TUNING:-0}"
+ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -55,19 +57,21 @@ fi
 # Obtem a subnet/prefixo da interface.
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
+echo "Iniciando runner na interface $IFACE... (rev: $RUNNER_REV)" >&2
+
 # ---------- Tunings de hardware (NIC) ----------
-
-echo "Otimizando Ring Buffers e Offloading na interface $IFACE... (rev: $RUNNER_REV)" >&2
-
-# Aumenta os buffers RX/TX para o maximo suportado pelo hardware.
-ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
-# Desabilita o Adaptive-RX para reduzir jitter em testes de throughput.
-ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
-# Garante que as interrupcoes de hardware nao fiquem presas em um so core (RPS).
-RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
-if [[ -e "$RPS_FILE" ]]; then
-  # Evita erro de redirecionamento em sysfs read-only.
-  printf "f\n" | tee "$RPS_FILE" >/dev/null 2>/dev/null || true
+# Desativado por padrao para evitar erros em ambientes com /sys read-only.
+# Ative explicitamente com ENABLE_NIC_TUNING=1 se precisar.
+if [[ "$ENABLE_NIC_TUNING" == "1" ]]; then
+  echo "Aplicando tunings de NIC em $IFACE..." >&2
+  ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
+  ethtool -C "$IFACE" adaptive-rx off 2>/dev/null || true
+  RPS_FILE="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
+  if [[ -e "$RPS_FILE" ]]; then
+    printf "f\n" | tee "$RPS_FILE" >/dev/null 2>/dev/null || true
+  fi
+else
+  echo "Tunings de NIC desativados (ENABLE_NIC_TUNING=0)." >&2
 fi
 
 # ---------- Policy routing por interface ----------
@@ -121,7 +125,7 @@ cleanup() {
   fi
   flock -u 9
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Monta rotas na tabela dedicada.
 GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
@@ -141,10 +145,13 @@ fi
 flock -u 9
 
 # ---------- Tunings de alta performance (rede) ----------
-sysctl -w net.core.rmem_max=33554432 >/dev/null 2>&1 || true
-sysctl -w net.core.wmem_max=33554432 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.tcp_rmem="4096 87380 33554432" >/dev/null 2>&1 || true
-sysctl -w net.ipv4.tcp_wmem="4096 65536 33554432" >/dev/null 2>&1 || true
+# Desativado por padrao para evitar alteracoes globais no host a cada fluxo.
+if [[ "$ENABLE_SYSCTL_TUNING" == "1" ]]; then
+  sysctl -w net.core.rmem_max=33554432 >/dev/null 2>&1 || true
+  sysctl -w net.core.wmem_max=33554432 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.tcp_rmem="4096 87380 33554432" >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.tcp_wmem="4096 65536 33554432" >/dev/null 2>&1 || true
+fi
 
 # ---------- Metricas iniciais (ping) ----------
 echo "Coletando metricas..." >&2
@@ -154,6 +161,10 @@ echo "[METRICS] Ping: $PING_AVG ms"
 # ---------- Execucao do iperf3 ----------
 ROUTE_DEBUG=$(ip route get "$SERVER_IP" from "$BIND_IP" 2>/dev/null || echo "Erro ao verificar rota final")
 echo "DEBUG_ROUTE: $ROUTE_DEBUG" >&2
+if [[ "$ROUTE_DEBUG" == "Erro ao verificar rota final" || "$ROUTE_DEBUG" == *"unreachable"* || "$ROUTE_DEBUG" == *"prohibit"* ]]; then
+  echo "Sem rota valida para $SERVER_IP a partir de $BIND_IP na interface $IFACE." >&2
+  exit 1
+fi
 
 NUM_CPUS=$(nproc)
 CORE_ID=$(( (IFINDEX + PORT) % NUM_CPUS ))
