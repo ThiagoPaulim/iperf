@@ -5,8 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependências de sistema para testes de rede e inspeção de interfaces.
-RUN apt-get update && apt-get install -y \
+# Dependências de sistema para testes de rede de alta performance.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     iperf3 \
     iproute2 \
     ethtool \
@@ -16,7 +16,11 @@ RUN apt-get update && apt-get install -y \
     gcc \
     libffi-dev \
     libssl-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Atualiza PIP para a versão mais recente
+RUN python -m pip install --upgrade pip
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

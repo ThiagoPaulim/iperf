@@ -54,48 +54,55 @@ fi
 # Obtém a subnet/prefixo da interface.
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
 
-# ---------- Tuning de Sysctl para Multi-Homing ----------
-# Essencial para impedir que o tráfego "vaze" para a interface errada.
+# ---------- Tunings de Performance de Kernel (Rede de Alta Velocidade) ----------
+# Estes tunings preparam o kernel para lidar com 2.5Gbps+ e múltiplas streams.
 
-echo "Aplicando sysctl tunings para $IFACE..."
+echo "Otimizando Kernel para Alta Performance..." >&2
 
-# ARP Filter = 1: Usa a tabela de roteamento para determinar se deve responder ao ARP.
-# Fundamental para quando múltiplas interfaces estão na mesma sub-rede.
+# Aumenta os buffers de socket TCP (Essencial para > 1Gbps)
+sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1 || true
+sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.tcp_rmem="4096 87380 16777216" >/dev/null 2>&1 || true
+sysctl -w net.ipv4.tcp_wmem="4096 65536 16777216" >/dev/null 2>&1 || true
+
+# Melhora a fila de pacotes e backlog
+sysctl -w net.core.netdev_max_backlog=10000 >/dev/null 2>&1 || true
+sysctl -w net.core.somaxconn=4096 >/dev/null 2>&1 || true
+
+# Ativa BBR se disponível (Melhor algoritmo de congestionamento do Google)
+if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+fi
+
+# Otimização de ARP para evitar lentidão em redes grandes
+sysctl -w net.ipv4.neigh.default.gc_thresh1=1024 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.neigh.default.gc_thresh2=2048 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.neigh.default.gc_thresh3=4096 >/dev/null 2>&1 || true
+
+# ---------- Tuning de Sysctl para Isolamento (Multi-Homing) ----------
+
+# ARP Filter = 1: Essencial para interfaces na mesma sub-rede
 sysctl -w net.ipv4.conf.all.arp_filter=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf."$IFACE".arp_filter=1 >/dev/null 2>&1 || true
-
-# ARP Ignore = 1: Responder ARP apenas se o IP alvo estiver configurado NA interface de entrada.
-sysctl -w net.ipv4.conf.all.arp_ignore=1 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf."$IFACE".arp_ignore=1 >/dev/null 2>&1 || true
-
-# ARP Announce = 2: Usar o melhor endereço local para anunciar nesta interface.
-sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf."$IFACE".arp_announce=2 >/dev/null 2>&1 || true
-
-# RP Buffer = 0: Desabilitar RP filter para evitar drop de pacotes em interfaces secundárias.
-sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf."$IFACE".rp_filter=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 
 # --------------------------------------------------------
 
-# Tenta descobrir o gateway da interface.
+# Tenta descobrir o gateway.
 GATEWAY=$(ip -4 route show dev "$IFACE" default 2>/dev/null | awk '/default/{print $3}' | head -n1)
-if [[ -z "$GATEWAY" ]]; then
-  GATEWAY=$(ip -4 route show dev "$IFACE" | awk '/via/{print $3}' | head -n1)
-fi
+[[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" | awk '/via/{print $3}' | head -n1)
 
-# ---------- Policy routing (Isolamento de Interface) ----------
+# ---------- Policy routing (Isolamento de Interface via FWMARK) ----------
 
-# Usamos o ifindex da interface como base para o ID da tabela.
 IFINDEX=$(cat "/sys/class/net/$IFACE/ifindex" 2>/dev/null || echo "$PORT")
 TABLE_ID=$((IFINDEX + 1000))
+MARK_ID=$TABLE_ID
 
-echo "DEBUG: Configurando Tabela $TABLE_ID para interface $IFACE (IP: $BIND_IP)" >&2
+echo "DEBUG: Configurando Tabela $TABLE_ID e Mark $MARK_ID para $IFACE (IP: $BIND_IP)" >&2
 
-# Função de limpeza segura
 cleanup() {
   local active_runners
-  # Fallback caso pgrep não esteja disponível (embora deva estar após o build)
   if command -v pgrep >/dev/null; then
     active_runners=$(pgrep -f "iperf-runner.sh $IFACE" | wc -l)
   else
@@ -103,7 +110,8 @@ cleanup() {
   fi
 
   if [[ "$active_runners" -le 1 ]]; then
-    echo "DEBUG: Liberando interface $IFACE (Table $TABLE_ID)..." >&2
+    echo "DEBUG: Liberando interface $IFACE..." >&2
+    ip rule del fwmark "$MARK_ID" table "$TABLE_ID" 2>/dev/null || true
     ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
     ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
     ip route flush table "$TABLE_ID" 2>/dev/null || true
@@ -111,40 +119,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Limpa estado anterior
+# Limpa estado anterior (Garante isolamento)
+ip rule del fwmark "$MARK_ID" table "$TABLE_ID" 2>/dev/null || true
 ip rule del from "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 ip rule del oif "$IFACE" table "$TABLE_ID" 2>/dev/null || true
 ip route flush table "$TABLE_ID" 2>/dev/null || true
 
-# 1. Rota para a Subrede Local (Essencial para ARP e comunicação local)
+# 1. Rota Local e Gateway
 if [[ -n "$SUBNET" ]]; then
-    # Adiciona a subrede como rota direta (link-local)
     ip route add "$SUBNET" dev "$IFACE" proto kernel scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
-# 2. Rota Default (Gateway)
 if [[ -n "$GATEWAY" ]]; then
-    echo "DEBUG: Usando Gateway $GATEWAY para $IFACE" >&2
     ip route add default via "$GATEWAY" dev "$IFACE" src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 else
-    # Fallback caso o IP do servidor esteja em outra rede e não tenhamos gateway detectado
-    echo "DEBUG: Gateway não detectado. Forçando rota para o servidor via interface." >&2
     ip route add "$SERVER_IP" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
 fi
 
-# 3. Regras de Política de Roteamento (Prioridade Máxima)
-# Com 'from BIND_IP', garantimos que qualquer pacote gerado pelo iperf (-B) use esta tabela.
-# Com 'oif IFACE', garantimos que pacotes de resposta do kernel também sigam a mesma lógica.
+# 2. Regras de Política Triplas (Cinturão e Suspensório)
+# - Baseado no IP de origem
+# - Baseado na Interface de saída
+# - Baseado no FW Mark (Caso o kernel tente trocar a interface depois do bind)
 ip rule add from "$BIND_IP" table "$TABLE_ID" pref 1000
 ip rule add oif "$IFACE" table "$TABLE_ID" pref 1001
+ip rule add fwmark "$MARK_ID" table "$TABLE_ID" pref 1002
 
-# Força atualização do cache de rotas
+# 3. Força flush do cache
 ip route flush cache 2>/dev/null || true
 
-# EXIBE TABELA PARA DEBUG (Nos logs do container)
-echo "--- CONFIGURAÇÃO FINAL Tabela $TABLE_ID ($IFACE) ---" >&2
+# DEBUG FINAL
+echo "--- TABELA $TABLE_ID ($IFACE) ---" >&2
 ip route show table "$TABLE_ID" >&2
-echo "-----------------------------------------------------" >&2
+echo "---------------------------------" >&2
 
 RULES_CREATED=1
 
