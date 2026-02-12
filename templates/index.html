@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Teste de Desempenho de Rede - Multi-Interfaces</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260212r17') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260212r18') }}" />
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -59,6 +59,10 @@
           IP do servidor
           <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
         </label>
+        <label style="grid-column: 1 / -1;">
+          IP remoto por interface (opcional)
+          <input id="serverIpMap" type="text" placeholder="Ex: enx001=172.16.10.201, enx002=172.16.10.202" />
+        </label>
         <label>
           Tempo (segundos)
           <input id="duration" type="number" min="1" max="3600" value="10" />
@@ -68,7 +72,7 @@
           <select id="mode">
             <option value="upload">Upload</option>
             <option value="download">Download</option>
-            <option value="both">Ambos (simultaneo)</option>
+            <option value="both">Ambos</option>
             <option value="both_sequential">Ambos - Separados</option>
           </select>
         </label>
@@ -104,7 +108,8 @@
       <p class="form-note">
         <strong>Nota:</strong> Cada interface usa uma porta diferente no servidor iperf3 (porta base, base+1,
         base+2...).
-        <br>No modo <strong>Ambos (simultaneo)</strong>, sao usadas <strong>2 portas por interface</strong> (upload e download).
+        <br>No modo <strong>Ambos (simultaneo)</strong>, sao usadas <strong>2 portas por interface</strong> (upload e
+        download).
         Certifique-se de ter instancias iperf3 rodando em cada porta no servidor.
         <br>Ex: <code>iperf3 -s -p 5201</code>, <code>iperf3 -s -p 5202</code>, <code>iperf3 -s -p 5203</code>...
         <br>Use mais streams (ex: 4 ou 8) para tentar atingir a velocidade maxima.
@@ -185,8 +190,7 @@
     </section>
   </main>
 
-  <script src="{{ url_for('static', filename='main.js', v='20260212r17') }}"></script>
+  <script src="{{ url_for('static', filename='main.js', v='20260212r18') }}"></script>
 </body>
 
 </html>
-

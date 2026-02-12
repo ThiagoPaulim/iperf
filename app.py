@@ -25,7 +25,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r17"
+APP_REV = "2026-02-12-r18"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -316,19 +316,38 @@ def find_closed_ports(server_ip: str, ports: List[int], timeout: float = 0.8) ->
     return closed
 
 
-def wait_for_open_ports(
-    server_ip: str, ports: List[int], max_wait_s: float, probe_timeout_s: float = 0.8
-) -> List[int]:
-    """Aguarda ate max_wait_s para todas as portas ficarem acessiveis."""
+def find_closed_endpoints(endpoints: List[Tuple[str, int]], timeout: float = 0.8) -> List[Tuple[str, int]]:
+    """Verifica quais endpoints (ip,porta) nao aceitam conexao TCP."""
+
+    closed: List[Tuple[str, int]] = []
+    unique = sorted(set((str(ip), int(port)) for ip, port in endpoints), key=lambda x: (x[0], x[1]))
+    for ip, port in unique:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            result = sock.connect_ex((ip, int(port)))
+            if result != 0:
+                closed.append((ip, port))
+        except Exception:
+            closed.append((ip, port))
+        finally:
+            sock.close()
+    return closed
+
+
+def wait_for_open_endpoints(
+    endpoints: List[Tuple[str, int]], max_wait_s: float, probe_timeout_s: float = 0.8
+) -> List[Tuple[str, int]]:
+    """Aguarda ate max_wait_s para endpoints (ip,porta) ficarem acessiveis."""
 
     end_ts = time.time() + max_wait_s
-    closed = sorted(set(ports))
+    closed = sorted(set((str(ip), int(port)) for ip, port in endpoints), key=lambda x: (x[0], x[1]))
     while True:
-        closed = find_closed_ports(server_ip, ports, timeout=probe_timeout_s)
+        closed = find_closed_endpoints(endpoints, timeout=probe_timeout_s)
         if not closed:
             return []
         if time.time() >= end_ts:
-            return sorted(set(closed))
+            return sorted(set(closed), key=lambda x: (x[0], x[1]))
         time.sleep(0.4)
 
 
@@ -355,11 +374,19 @@ def interface_is_usb(interface: str) -> bool:
 
 
 def recommended_parallel_for_interface(interface: str, requested: int) -> int:
-    if requested <= 2:
-        return requested
-    if interface_is_usb(interface):
-        return 2
     return requested
+
+
+def usb_controller_key(interface: str) -> str:
+    device_path = Path(f"/sys/class/net/{interface}/device")
+    if not device_path.exists():
+        return ""
+    try:
+        resolved = str(device_path.resolve())
+    except Exception:
+        return ""
+    match = re.search(r"/usb\d+", resolved)
+    return match.group(0) if match else ""
 
 
 def is_transient_iperf_error(text: str) -> bool:
@@ -569,10 +596,30 @@ def validate_payload(payload: dict) -> Optional[str]:
     if parallel < 1 or parallel > 64:
         return "Parallel deve estar entre 1 e 64."
 
+    server_ip_by_interface = payload.get("server_ip_by_interface") or {}
+    if not isinstance(server_ip_by_interface, dict):
+        return "server_ip_by_interface deve ser um objeto."
+
     available = {item["name"] for item in list_interfaces()}
     for iface in payload["interfaces"]:
         if iface not in available:
             return f"Interface invalida: {iface}"
+        mapped_ip = server_ip_by_interface.get(iface)
+        if mapped_ip:
+            try:
+                ipaddress.ip_address(str(mapped_ip))
+            except ValueError:
+                return f"IP remoto invalido para {iface}: {mapped_ip}"
+
+    for mapped_iface, mapped_ip in server_ip_by_interface.items():
+        if mapped_iface not in payload["interfaces"]:
+            return f"Mapeamento informado para interface nao selecionada: {mapped_iface}"
+        if mapped_iface not in available:
+            return f"Interface invalida no mapeamento: {mapped_iface}"
+        try:
+            ipaddress.ip_address(str(mapped_ip))
+        except ValueError:
+            return f"IP remoto invalido para {mapped_iface}: {mapped_ip}"
 
     return None
 
@@ -850,6 +897,7 @@ def run_single_test(
 
 def run_sequential_both(
     server_ip: str,
+    server_ip_by_interface: Dict[str, str],
     duration: int,
     interfaces: List[str],
     sid: str,
@@ -867,7 +915,8 @@ def run_sequential_both(
             for idx, iface in enumerate(interfaces):
                 port = base_port + idx
                 flow_parallel = recommended_parallel_for_interface(iface, parallel)
-                phase_tests.append((iface, phase_mode, port, flow_parallel))
+                target_ip = str(server_ip_by_interface.get(iface) or server_ip)
+                phase_tests.append((target_ip, iface, phase_mode, port, flow_parallel))
             run_parallel_tests(server_ip, duration, phase_tests, sid, run_id, parallel, clear_context=False)
     finally:
         clear_run_context(run_id)
@@ -876,7 +925,7 @@ def run_sequential_both(
 def run_parallel_tests(
     server_ip: str,
     duration: int,
-    tests: List[Tuple[str, str, int, int]],
+    tests: List[Tuple[str, str, str, int, int]],
     sid: str,
     run_id: str,
     parallel: int,
@@ -888,7 +937,7 @@ def run_parallel_tests(
     ready_barrier = threading.Barrier(len(tests) + 1)
     threads = []
 
-    def worker(iface: str, mode: str, port: int, flow_parallel: int) -> None:
+    def worker(target_ip: str, iface: str, mode: str, port: int, flow_parallel: int) -> None:
         start_event.wait()
         try:
             # Barreira para alinhar inicio dos fluxos no mesmo instante.
@@ -897,10 +946,10 @@ def run_parallel_tests(
             return
         if not is_current_run(sid, run_id):
             return
-        run_single_test(server_ip, duration, iface, mode, sid, run_id, port, flow_parallel)
+        run_single_test(target_ip, duration, iface, mode, sid, run_id, port, flow_parallel)
 
-    for iface, mode, port, flow_parallel in tests:
-        t = threading.Thread(target=worker, args=(iface, mode, port, flow_parallel))
+    for target_ip, iface, mode, port, flow_parallel in tests:
+        t = threading.Thread(target=worker, args=(target_ip, iface, mode, port, flow_parallel))
         t.start()
         threads.append(t)
 
@@ -1309,6 +1358,7 @@ def start_test(payload: dict):
     ssh_pass = payload.get("ssh_pass")
 
     server_ip = payload["server_ip"]
+    server_ip_by_interface = {str(k): str(v) for k, v in (payload.get("server_ip_by_interface") or {}).items()}
     interfaces = payload["interfaces"]
     base_port = int(payload.get("base_port", 5201))
     parallel = int(payload.get("parallel", 4))
@@ -1322,6 +1372,7 @@ def start_test(payload: dict):
             "ssh_user": ssh_user or "",
             "ssh_pass": ssh_pass or "",
             "server_ip": server_ip,
+            "server_ip_by_interface": server_ip_by_interface,
         },
     )
 
@@ -1346,16 +1397,55 @@ def start_test(payload: dict):
         )
         time.sleep(2)
 
-    # Portas necessarias
-    # Se modo for 'both' (simultaneo), precisamos de 2 portas por interface (uma pra up, uma pra down).
-    # Em 'both_sequential', reutilizamos a mesma porta pois as fases nao se sobrepoem.
-    needed_ports: List[int] = []
-    if selected_mode == "both":
-        total_slots = len(interfaces) * 2
-        needed_ports = [base_port + i for i in range(total_slots)]
+    if selected_mode == "both_sequential":
+        modes = ["upload", "download"]
+    elif selected_mode == "both":
+        modes = ["upload", "download"]
     else:
-        # upload, download e both_sequential usam 1 porta por interface
+        modes = [selected_mode]
+
+    # Portas necessarias para setup remoto do iperf3.
+    if selected_mode == "both":
+        needed_ports = [base_port + i for i in range(len(interfaces) * 2)]
+    else:
         needed_ports = [base_port + i for i in range(len(interfaces))]
+
+    if server_ip_by_interface:
+        mapped_items = [f"{iface}={server_ip_by_interface[iface]}" for iface in interfaces if iface in server_ip_by_interface]
+        if mapped_items:
+            emit_run_event(
+                "test_error",
+                {
+                    "message": "IP remoto por interface ativado: " + ", ".join(mapped_items),
+                    "fatal": False,
+                },
+                sid,
+                run_id,
+            )
+
+    usb_ifaces = [iface for iface in interfaces if interface_is_usb(iface)]
+    usb_groups: Dict[str, List[str]] = {}
+    for iface in usb_ifaces:
+        key = usb_controller_key(iface)
+        if not key:
+            continue
+        usb_groups.setdefault(key, []).append(iface)
+    shared_usb_groups = [group for group in usb_groups.values() if len(group) > 1]
+    if shared_usb_groups:
+        for group in shared_usb_groups:
+            emit_run_event(
+                "test_error",
+                {
+                    "message": (
+                        "Interfaces USB no mesmo controlador detectadas: "
+                        + ", ".join(group)
+                        + ". Pode haver divisao fisica de banda; prefira portas/controladoras USB distintas."
+                    ),
+                    "fatal": False,
+                },
+                sid,
+                run_id,
+            )
 
     if configure_server:
         if not ssh_user or not ssh_pass:
@@ -1389,21 +1479,33 @@ def start_test(payload: dict):
         print(f"Servidor remoto configurado: {msg}", flush=True)
         time.sleep(1)
 
-    closed_ports = wait_for_open_ports(
-        server_ip,
-        needed_ports,
+    endpoint_targets: List[Tuple[str, int]] = []
+    if selected_mode == "both":
+        port_idx = 0
+        for iface in interfaces:
+            target_ip = str(server_ip_by_interface.get(iface) or server_ip)
+            for _mode in modes:
+                endpoint_targets.append((target_ip, base_port + port_idx))
+                port_idx += 1
+    else:
+        for idx, iface in enumerate(interfaces):
+            target_ip = str(server_ip_by_interface.get(iface) or server_ip)
+            endpoint_targets.append((target_ip, base_port + idx))
+
+    closed_endpoints = wait_for_open_endpoints(
+        endpoint_targets,
         max_wait_s=10.0 if configure_server else 2.0,
         probe_timeout_s=0.7,
     )
-    if closed_ports:
+    if closed_endpoints:
         clear_run_context(run_id)
-        preview = ", ".join(str(p) for p in closed_ports[:8])
-        suffix = "..." if len(closed_ports) > 8 else ""
+        preview = ", ".join(f"{ip}:{port}" for ip, port in closed_endpoints[:8])
+        suffix = "..." if len(closed_endpoints) > 8 else ""
         emit_run_event(
             "test_error",
             {
                 "message": (
-                    "Portas do iperf3 indisponiveis no servidor remoto: "
+                    "Endpoints do iperf3 indisponiveis no servidor remoto: "
                     f"{preview}{suffix}. "
                     "No modo 'Ambos (simultaneo)' sao necessarias 2 portas por interface."
                 )
@@ -1412,13 +1514,6 @@ def start_test(payload: dict):
             run_id,
         )
         return
-
-    if selected_mode == "both_sequential":
-        modes = ["upload", "download"]
-    elif selected_mode == "both":
-        modes = ["upload", "download"]
-    else:
-        modes = [selected_mode]
 
     emit_run_event(
         "test_started",
@@ -1455,6 +1550,7 @@ def start_test(payload: dict):
         socketio.start_background_task(
             run_sequential_both,
             server_ip,
+            server_ip_by_interface,
             duration,
             interfaces,
             sid,
@@ -1464,28 +1560,14 @@ def start_test(payload: dict):
         )
     else:
         # Modos simultaneos: todos os testes ao mesmo tempo.
-        usb_ifaces = [iface for iface in interfaces if interface_is_usb(iface)]
-        if usb_ifaces and parallel > 2:
-            emit_run_event(
-                "test_error",
-                {
-                    "message": (
-                        "Interfaces USB detectadas ("
-                        + ", ".join(usb_ifaces)
-                        + "). Ajustando streams para 2 nessas interfaces para reduzir divisao/instabilidade."
-                    ),
-                    "fatal": False,
-                },
-                sid,
-                run_id,
-            )
-        tests: List[Tuple[str, str, int, int]] = []
+        tests: List[Tuple[str, str, str, int, int]] = []
         port_idx = 0
         for iface in interfaces:
             for mode in modes:
                 port = base_port + port_idx
                 flow_parallel = recommended_parallel_for_interface(iface, parallel)
-                tests.append((iface, mode, port, flow_parallel))
+                target_ip = str(server_ip_by_interface.get(iface) or server_ip)
+                tests.append((target_ip, iface, mode, port, flow_parallel))
                 port_idx += 1
         socketio.start_background_task(
             run_parallel_tests,
