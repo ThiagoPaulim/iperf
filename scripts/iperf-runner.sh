@@ -16,9 +16,12 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-12-r13"
+RUNNER_REV="2026-02-12-r14"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
+ENABLE_MULTIHOME_TUNING="${ENABLE_MULTIHOME_TUNING:-1}"
+CONNECT_TIMEOUT_MS="${CONNECT_TIMEOUT_MS:-12000}"
+PRECHECK_TIMEOUT_S="${PRECHECK_TIMEOUT_S:-3.0}"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -45,6 +48,21 @@ if [[ ! "$PARALLEL" =~ ^[0-9]+$ ]]; then
   echo "Parallel invalido" >&2
   exit 2
 fi
+if [[ ! "$CONNECT_TIMEOUT_MS" =~ ^[0-9]+$ ]]; then
+  CONNECT_TIMEOUT_MS=12000
+fi
+
+tune_multihome_iface() {
+  if [[ "$ENABLE_MULTIHOME_TUNING" != "1" ]]; then
+    return
+  fi
+  # Ambientes multihomed com varias NICs na mesma faixa podem sofrer ARP flux/rp_filter.
+  # Ajustes abaixo reduzem timeout intermitente por interface.
+  sysctl -w "net.ipv4.conf.${IFACE}.rp_filter=2" >/dev/null 2>&1 || true
+  sysctl -w "net.ipv4.conf.${IFACE}.arp_ignore=1" >/dev/null 2>&1 || true
+  sysctl -w "net.ipv4.conf.${IFACE}.arp_announce=2" >/dev/null 2>&1 || true
+  sysctl -w "net.ipv4.conf.${IFACE}.arp_filter=1" >/dev/null 2>&1 || true
+}
 
 # ---------- Coleta de informacoes da interface ----------
 
@@ -144,6 +162,7 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
 
   # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
   if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
+    tune_multihome_iface
     BEFORE_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
@@ -208,12 +227,13 @@ fi
 # ---------- Preflight TCP ----------
 # Verifica rapidamente se a porta remota responde a partir do IP da interface.
 PRECHECK_OK=0
-for attempt in 1 2 3; do
-  if python - "$BIND_IP" "$SERVER_IP" "$PORT" <<'PY'
+for attempt in 1 2 3 4 5; do
+  if python - "$BIND_IP" "$SERVER_IP" "$PORT" "$PRECHECK_TIMEOUT_S" <<'PY'
 import socket, sys
 bind_ip, server_ip, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+timeout_s = float(sys.argv[4])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.settimeout(2.0)
+s.settimeout(timeout_s)
 try:
     s.bind((bind_ip, 0))
     s.connect((server_ip, port))
@@ -267,7 +287,7 @@ fi
 
 # Evita travamentos longos de conexao em interfaces sem alcance.
 if iperf3 --help 2>&1 | grep -q -- "--connect-timeout"; then
-  CMD+=( --connect-timeout 3000 )
+  CMD+=( --connect-timeout "$CONNECT_TIMEOUT_MS" )
 fi
 
 echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2

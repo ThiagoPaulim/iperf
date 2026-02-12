@@ -24,7 +24,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r12"
+APP_REV = "2026-02-12-r13"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -706,8 +706,8 @@ def run_single_test(
                 )
                 return
             if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
-                # Pequeno jitter evita retentativas em rajada no mesmo instante.
-                wait_s = min(3.4, 0.7 + (attempt * 0.6) + random.uniform(0.15, 0.85))
+                # Jitter progressivo evita rajada simultanea de reconexao.
+                wait_s = min(4.8, 1.1 + (attempt * 0.9) + random.uniform(0.2, 1.0))
                 emit_run_event(
                     "test_error",
                     {
@@ -806,7 +806,7 @@ def run_parallel_tests(
             return
         # Mantem quase simultaneo, mas evita pico de SYN/controle no mesmo milissegundo.
         spread_key = f"{iface}:{mode}:{port}:{run_id}"
-        initial_jitter_s = (sum(ord(ch) for ch in spread_key) % 160) / 1000.0
+        initial_jitter_s = (sum(ord(ch) for ch in spread_key) % 900) / 1000.0
         if initial_jitter_s > 0:
             time.sleep(initial_jitter_s)
         run_single_test(server_ip, duration, iface, mode, sid, run_id, port, parallel)
@@ -1147,7 +1147,7 @@ def start_test(payload: dict):
     closed_ports = wait_for_open_ports(
         server_ip,
         needed_ports,
-        max_wait_s=6.0 if configure_server else 1.2,
+        max_wait_s=10.0 if configure_server else 2.0,
         probe_timeout_s=0.7,
     )
     if closed_ports:
