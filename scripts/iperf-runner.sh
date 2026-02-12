@@ -16,12 +16,14 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-12-r14"
+RUNNER_REV="2026-02-12-r15"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 ENABLE_MULTIHOME_TUNING="${ENABLE_MULTIHOME_TUNING:-1}"
 CONNECT_TIMEOUT_MS="${CONNECT_TIMEOUT_MS:-12000}"
 PRECHECK_TIMEOUT_S="${PRECHECK_TIMEOUT_S:-3.0}"
+ENABLE_TCP_PRECHECK="${ENABLE_TCP_PRECHECK:-0}"
+ENABLE_TASKSET_PINNING="${ENABLE_TASKSET_PINNING:-0}"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -50,6 +52,12 @@ if [[ ! "$PARALLEL" =~ ^[0-9]+$ ]]; then
 fi
 if [[ ! "$CONNECT_TIMEOUT_MS" =~ ^[0-9]+$ ]]; then
   CONNECT_TIMEOUT_MS=12000
+fi
+if [[ ! "$ENABLE_TCP_PRECHECK" =~ ^[01]$ ]]; then
+  ENABLE_TCP_PRECHECK=0
+fi
+if [[ ! "$ENABLE_TASKSET_PINNING" =~ ^[01]$ ]]; then
+  ENABLE_TASKSET_PINNING=0
 fi
 
 tune_multihome_iface() {
@@ -224,11 +232,12 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" && "$ROUTE_DEBUG" != *" dev $IFACE "* ]]; 
   exit 1
 fi
 
-# ---------- Preflight TCP ----------
-# Verifica rapidamente se a porta remota responde a partir do IP da interface.
-PRECHECK_OK=0
-for attempt in 1 2 3 4 5; do
-  if python - "$BIND_IP" "$SERVER_IP" "$PORT" "$PRECHECK_TIMEOUT_S" <<'PY'
+if [[ "$ENABLE_TCP_PRECHECK" == "1" ]]; then
+  # ---------- Preflight TCP ----------
+  # Pode gerar ruido em alta concorrencia com servidores estritos; por isso e opcional.
+  PRECHECK_OK=0
+  for attempt in 1 2 3; do
+    if python - "$BIND_IP" "$SERVER_IP" "$PORT" "$PRECHECK_TIMEOUT_S" <<'PY'
 import socket, sys
 bind_ip, server_ip, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 timeout_s = float(sys.argv[4])
@@ -244,22 +253,26 @@ except Exception as exc:
 finally:
     s.close()
 PY
-  then
-    PRECHECK_OK=1
-    break
-  fi
-  sleep 0.4
-done
+    then
+      PRECHECK_OK=1
+      break
+    fi
+    sleep 0.5
+  done
 
-if [[ "$PRECHECK_OK" -ne 1 ]]; then
-  echo "Precheck TCP falhou para $SERVER_IP:$PORT a partir de $BIND_IP ($IFACE)." >&2
-  exit 1
+  if [[ "$PRECHECK_OK" -ne 1 ]]; then
+    echo "Precheck TCP falhou para $SERVER_IP:$PORT a partir de $BIND_IP ($IFACE)." >&2
+    exit 1
+  fi
 fi
 
 NUM_CPUS=$(nproc)
 CORE_ID=$(( (IFINDEX + PORT) % NUM_CPUS ))
 
-EXEC_PREFIX=(taskset -c "$CORE_ID")
+EXEC_PREFIX=()
+if [[ "$ENABLE_TASKSET_PINNING" == "1" ]]; then
+  EXEC_PREFIX=(taskset -c "$CORE_ID")
+fi
 
 # --bind-dev reduz ambiguidade de roteamento quando ha interfaces em sub-redes similares.
 BIND_DEV_ARGS=()
@@ -290,8 +303,13 @@ if iperf3 --help 2>&1 | grep -q -- "--connect-timeout"; then
   CMD+=( --connect-timeout "$CONNECT_TIMEOUT_MS" )
 fi
 
-echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2
-RUN_TIMEOUT=$((DURATION + 12))
+if [[ "$ENABLE_TASKSET_PINNING" == "1" ]]; then
+  echo "DEBUG: Iniciando iperf3 no Core $CORE_ID (policy table: $TABLE_ID)" >&2
+else
+  echo "DEBUG: Iniciando iperf3 sem pinagem de CPU (policy table: $TABLE_ID)" >&2
+fi
+CONNECT_TIMEOUT_S=$(( (CONNECT_TIMEOUT_MS + 999) / 1000 ))
+RUN_TIMEOUT=$((DURATION + CONNECT_TIMEOUT_S + 20))
 if command -v timeout >/dev/null 2>&1; then
   timeout --foreground --signal=TERM "$RUN_TIMEOUT" "${CMD[@]}"
 else

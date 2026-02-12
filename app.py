@@ -24,7 +24,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r13"
+APP_REV = "2026-02-12-r14"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -569,6 +569,10 @@ def run_single_test(
     # Mantem comportamento estavel de rede por processo.
     runner_env.setdefault("ENABLE_SYSCTL_TUNING", "0")
     runner_env.setdefault("ENABLE_POLICY_ROUTING", "1")
+    runner_env.setdefault("ENABLE_MULTIHOME_TUNING", "1")
+    runner_env.setdefault("ENABLE_TCP_PRECHECK", "0")
+    runner_env.setdefault("ENABLE_TASKSET_PINNING", "0")
+    runner_env.setdefault("CONNECT_TIMEOUT_MS", os.environ.get("CONNECT_TIMEOUT_MS", "12000"))
 
     process: Optional[subprocess.Popen] = None
 
@@ -836,6 +840,26 @@ def setup_remote_server(ip, user, password, ports):
         # Usa uma unica execucao remota para reduzir abertura de canais SSH.
         remote_cmd = f"""
 PORTS="{ports_arg}"
+# Ajustes para hosts multihomed e firewalls (best-effort).
+sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
+for c in /proc/sys/net/ipv4/conf/*; do
+  i="$(basename "$c")"
+  [ "$i" = "lo" ] && continue
+  sysctl -w "net.ipv4.conf.$i.arp_ignore=1" >/dev/null 2>&1 || true
+  sysctl -w "net.ipv4.conf.$i.arp_announce=2" >/dev/null 2>&1 || true
+done
+for p in $PORTS; do
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    firewall-cmd --quiet --add-port="$p"/tcp >/dev/null 2>&1 || true
+  fi
+  if command -v ufw >/dev/null 2>&1; then
+    ufw allow "$p"/tcp >/dev/null 2>&1 || true
+  fi
+done
 for p in $PORTS; do
   fuser -k -n tcp "$p" >/dev/null 2>&1 || true
   pkill -f "iperf3 -s -p $p" >/dev/null 2>&1 || true
