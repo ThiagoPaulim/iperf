@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import deque
 import ipaddress
 import os
+import random
 import re
 import signal
 import socket
@@ -23,7 +24,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r11"
+APP_REV = "2026-02-12-r12"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -377,6 +378,26 @@ def build_error_tail(lines: deque) -> str:
     if not filtered:
         filtered = [item for item in list(lines)[-8:] if item]
 
+    prioritized = []
+    error_markers = (
+        "error",
+        "falha",
+        "unable to connect",
+        "timed out",
+        "timeout",
+        "interrupt",
+        "sem rota",
+        "precheck tcp falhou",
+        "connection refused",
+        "no route to host",
+    )
+    for item in filtered:
+        lower = item.lower()
+        if any(marker in lower for marker in error_markers):
+            prioritized.append(item)
+    if prioritized:
+        return " | ".join(prioritized[-4:])
+
     return " | ".join(filtered[-10:])
 
 
@@ -685,7 +706,8 @@ def run_single_test(
                 )
                 return
             if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
-                wait_s = min(3.0, 0.7 + (attempt * 0.6))
+                # Pequeno jitter evita retentativas em rajada no mesmo instante.
+                wait_s = min(3.4, 0.7 + (attempt * 0.6) + random.uniform(0.15, 0.85))
                 emit_run_event(
                     "test_error",
                     {
@@ -698,7 +720,8 @@ def run_single_test(
                     sid,
                     run_id,
                 )
-                reset_policy_state(interface)
+                # Evita limpar policy no meio de fluxos simultaneos da mesma interface.
+                # O runner ja faz cleanup no EXIT de cada processo.
                 time.sleep(wait_s)
                 run_single_test(
                     server_ip,
@@ -781,6 +804,11 @@ def run_parallel_tests(
         start_event.wait()
         if not is_current_run(sid, run_id):
             return
+        # Mantem quase simultaneo, mas evita pico de SYN/controle no mesmo milissegundo.
+        spread_key = f"{iface}:{mode}:{port}:{run_id}"
+        initial_jitter_s = (sum(ord(ch) for ch in spread_key) % 160) / 1000.0
+        if initial_jitter_s > 0:
+            time.sleep(initial_jitter_s)
         run_single_test(server_ip, duration, iface, mode, sid, run_id, port, parallel)
 
     for iface, mode, port in tests:
@@ -1107,6 +1135,12 @@ def start_test(payload: dict):
             emit_run_event("test_error", {"message": f"Falha na configuracao remota: {msg}"}, sid, run_id)
             return
 
+        emit_run_event(
+            "test_error",
+            {"message": f"Servidor remoto configurado com sucesso. {msg}", "fatal": False},
+            sid,
+            run_id,
+        )
         print(f"Servidor remoto configurado: {msg}", flush=True)
         time.sleep(1)
 

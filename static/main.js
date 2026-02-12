@@ -513,7 +513,7 @@ socket.on("test_error", (msg) => {
   if (!isCurrentRunMessage(msg)) return;
   const fatal = msg.fatal !== false;
   showToast(msg.message, fatal ? "error" : "info");
-  log(`Erro: ${msg.message}`);
+  log(`${fatal ? "Erro" : "Info"}: ${msg.message}`);
   if (fatal && !runStarted) {
     testInProgress = false;
     awaitingRunAck = false;
