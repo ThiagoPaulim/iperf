@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-12-r15"
+RUNNER_REV="2026-02-12-r16"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 ENABLE_MULTIHOME_TUNING="${ENABLE_MULTIHOME_TUNING:-1}"
@@ -66,6 +66,14 @@ tune_multihome_iface() {
   fi
   # Ambientes multihomed com varias NICs na mesma faixa podem sofrer ARP flux/rp_filter.
   # Ajustes abaixo reduzem timeout intermitente por interface.
+  sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.all.arp_ignore=1 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.default.arp_ignore=1 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.all.arp_announce=2 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.default.arp_announce=2 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.all.arp_filter=1 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.default.arp_filter=1 >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.${IFACE}.rp_filter=2" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.${IFACE}.arp_ignore=1" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.${IFACE}.arp_announce=2" >/dev/null 2>&1 || true

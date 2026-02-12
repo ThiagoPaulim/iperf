@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import deque
+from functools import lru_cache
 import ipaddress
 import os
 import random
@@ -24,7 +25,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r16"
+APP_REV = "2026-02-12-r17"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -36,6 +37,9 @@ RUN_STATE_LOCK = threading.Lock()
 RUN_STATE: Dict[str, str] = {}
 REMOTE_MONITORS_LOCK = threading.Lock()
 REMOTE_MONITORS: Dict[str, threading.Event] = {}
+REMOTE_PORT_OPS_LOCK = threading.Lock()
+RUN_CONTEXT_LOCK = threading.Lock()
+RUN_CONTEXT: Dict[str, dict] = {}
 EXCLUDED_IFACE_PREFIXES = (
     "docker",
     "veth",
@@ -104,6 +108,21 @@ def emit_run_event(event: str, payload: dict, sid: str, run_id: str) -> None:
     message = dict(payload)
     message["run_id"] = run_id
     socketio.emit(event, message, room=sid)
+
+
+def set_run_context(run_id: str, context: dict) -> None:
+    with RUN_CONTEXT_LOCK:
+        RUN_CONTEXT[run_id] = dict(context)
+
+
+def get_run_context(run_id: str) -> dict:
+    with RUN_CONTEXT_LOCK:
+        return dict(RUN_CONTEXT.get(run_id, {}))
+
+
+def clear_run_context(run_id: str) -> None:
+    with RUN_CONTEXT_LOCK:
+        RUN_CONTEXT.pop(run_id, None)
 
 
 def terminate_process_tree(process: subprocess.Popen, grace_s: float = 8.0) -> bool:
@@ -322,6 +341,25 @@ def parse_mbps(value: float, unit: str) -> float:
     if unit == "K":
         return value / 1000
     return value
+
+
+@lru_cache(maxsize=256)
+def interface_is_usb(interface: str) -> bool:
+    device_path = Path(f"/sys/class/net/{interface}/device")
+    if not device_path.exists():
+        return interface.lower().startswith("enx")
+    try:
+        return "/usb" in str(device_path.resolve()).lower()
+    except Exception:
+        return interface.lower().startswith("enx")
+
+
+def recommended_parallel_for_interface(interface: str, requested: int) -> int:
+    if requested <= 2:
+        return requested
+    if interface_is_usb(interface):
+        return 2
+    return requested
 
 
 def is_transient_iperf_error(text: str) -> bool:
@@ -620,6 +658,7 @@ def run_single_test(
                 "mode": mode,
                 "port": port,
                 "attempt": attempt,
+                "parallel": parallel,
                 "timestamp": int(time.time()),
             },
             sid,
@@ -724,6 +763,34 @@ def run_single_test(
             if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
                 # Jitter progressivo evita rajada simultanea de reconexao.
                 wait_s = min(4.8, 1.1 + (attempt * 0.9) + random.uniform(0.2, 1.0))
+                context = get_run_context(run_id)
+                if context.get("configure_server"):
+                    emit_run_event(
+                        "test_error",
+                        {
+                            "message": f"Reiniciando porta remota {port} para {interface} ({mode})...",
+                            "fatal": False,
+                        },
+                        sid,
+                        run_id,
+                    )
+                    ok, restart_msg = restart_remote_port(
+                        context.get("server_ip", server_ip),
+                        context.get("ssh_user", ""),
+                        context.get("ssh_pass", ""),
+                        port,
+                    )
+                    emit_run_event(
+                        "test_error",
+                        {
+                            "message": (
+                                f"Porta remota {port} {'reiniciada' if ok else 'nao reiniciada'}: {restart_msg}"
+                            ),
+                            "fatal": False,
+                        },
+                        sid,
+                        run_id,
+                    )
                 emit_run_event(
                     "test_error",
                     {
@@ -791,25 +858,29 @@ def run_sequential_both(
     parallel: int,
 ) -> None:
     """Executa fases upload e download, com interfaces simultaneas em cada fase."""
-
-    for phase_mode in ["upload", "download"]:
-        if not is_current_run(sid, run_id):
-            return
-        emit_run_event("phase_started", {"mode": phase_mode}, sid, run_id)
-        phase_tests: List[Tuple[str, str, int]] = []
-        for idx, iface in enumerate(interfaces):
-            port = base_port + idx
-            phase_tests.append((iface, phase_mode, port))
-        run_parallel_tests(server_ip, duration, phase_tests, sid, run_id, parallel)
+    try:
+        for phase_mode in ["upload", "download"]:
+            if not is_current_run(sid, run_id):
+                return
+            emit_run_event("phase_started", {"mode": phase_mode}, sid, run_id)
+            phase_tests: List[Tuple[str, str, int, int]] = []
+            for idx, iface in enumerate(interfaces):
+                port = base_port + idx
+                flow_parallel = recommended_parallel_for_interface(iface, parallel)
+                phase_tests.append((iface, phase_mode, port, flow_parallel))
+            run_parallel_tests(server_ip, duration, phase_tests, sid, run_id, parallel, clear_context=False)
+    finally:
+        clear_run_context(run_id)
 
 
 def run_parallel_tests(
     server_ip: str,
     duration: int,
-    tests: List[Tuple[str, str, int]],
+    tests: List[Tuple[str, str, int, int]],
     sid: str,
     run_id: str,
     parallel: int,
+    clear_context: bool = True,
 ) -> None:
     """Dispara todos os testes de uma vez para inicio praticamente simultaneo."""
 
@@ -817,7 +888,7 @@ def run_parallel_tests(
     ready_barrier = threading.Barrier(len(tests) + 1)
     threads = []
 
-    def worker(iface: str, mode: str, port: int) -> None:
+    def worker(iface: str, mode: str, port: int, flow_parallel: int) -> None:
         start_event.wait()
         try:
             # Barreira para alinhar inicio dos fluxos no mesmo instante.
@@ -826,10 +897,10 @@ def run_parallel_tests(
             return
         if not is_current_run(sid, run_id):
             return
-        run_single_test(server_ip, duration, iface, mode, sid, run_id, port, parallel)
+        run_single_test(server_ip, duration, iface, mode, sid, run_id, port, flow_parallel)
 
-    for iface, mode, port in tests:
-        t = threading.Thread(target=worker, args=(iface, mode, port))
+    for iface, mode, port, flow_parallel in tests:
+        t = threading.Thread(target=worker, args=(iface, mode, port, flow_parallel))
         t.start()
         threads.append(t)
 
@@ -841,6 +912,8 @@ def run_parallel_tests(
 
     for t in threads:
         t.join()
+    if clear_context:
+        clear_run_context(run_id)
 
 
 def setup_remote_server(ip, user, password, ports):
@@ -1021,6 +1094,49 @@ done
         client.close()
 
 
+def restart_remote_port(ip: str, user: str, password: str, port: int) -> Tuple[bool, str]:
+    """Reinicia apenas uma porta iperf3 no servidor remoto."""
+
+    if not ip or not user or not password:
+        return False, "Credenciais SSH ausentes."
+
+    with REMOTE_PORT_OPS_LOCK:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(ip, username=user, password=password, timeout=5)
+            cmd = f"""
+p="{int(port)}"
+fuser -k -n tcp "$p" >/dev/null 2>&1 || true
+pkill -f "iperf3 -s -p $p" >/dev/null 2>&1 || true
+for i in $(seq 1 25); do
+  ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN || break
+  sleep 0.2
+done
+iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
+ok=0
+for i in $(seq 1 25); do
+  if ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN; then
+    ok=1
+    break
+  fi
+  sleep 0.2
+done
+[ "$ok" -eq 1 ] && echo "OK" || echo "FAIL"
+"""
+            stdin, stdout, stderr = client.exec_command(cmd, timeout=25)
+            _ = stdin
+            out = stdout.read().decode(errors="ignore").strip()
+            err = stderr.read().decode(errors="ignore").strip()
+            if "OK" in out:
+                return True, "Listener ativo."
+            return False, f"Sem listener apos restart. stderr: {err[:120]}"
+        except Exception as exc:
+            return False, f"Erro SSH no restart de porta: {exc}"
+        finally:
+            client.close()
+
+
 def monitor_remote_system(
     ip: str,
     user: str,
@@ -1183,6 +1299,7 @@ def start_test(payload: dict):
 
     error = validate_payload(payload)
     if error:
+        clear_run_context(run_id)
         emit_run_event("test_error", {"message": error}, sid, run_id)
         return
 
@@ -1198,6 +1315,15 @@ def start_test(payload: dict):
     selected_mode = payload["mode"]
     duration = int(payload["duration"])
     total_duration = duration * 2 if selected_mode == "both_sequential" else duration
+    set_run_context(
+        run_id,
+        {
+            "configure_server": configure_server,
+            "ssh_user": ssh_user or "",
+            "ssh_pass": ssh_pass or "",
+            "server_ip": server_ip,
+        },
+    )
 
     stopped = stop_all_active_tests()
     orphan_killed = cleanup_orphan_runner_processes()
@@ -1233,6 +1359,7 @@ def start_test(payload: dict):
 
     if configure_server:
         if not ssh_user or not ssh_pass:
+            clear_run_context(run_id)
             emit_run_event(
                 "test_error",
                 {"message": "Usuario e senha SSH sao obrigatorios para configuracao automatica."},
@@ -1249,6 +1376,7 @@ def start_test(payload: dict):
         )
         success, msg = setup_remote_server(server_ip, ssh_user, ssh_pass, needed_ports)
         if not success:
+            clear_run_context(run_id)
             emit_run_event("test_error", {"message": f"Falha na configuracao remota: {msg}"}, sid, run_id)
             return
 
@@ -1268,6 +1396,7 @@ def start_test(payload: dict):
         probe_timeout_s=0.7,
     )
     if closed_ports:
+        clear_run_context(run_id)
         preview = ", ".join(str(p) for p in closed_ports[:8])
         suffix = "..." if len(closed_ports) > 8 else ""
         emit_run_event(
@@ -1335,12 +1464,28 @@ def start_test(payload: dict):
         )
     else:
         # Modos simultaneos: todos os testes ao mesmo tempo.
-        tests: List[Tuple[str, str, int]] = []
+        usb_ifaces = [iface for iface in interfaces if interface_is_usb(iface)]
+        if usb_ifaces and parallel > 2:
+            emit_run_event(
+                "test_error",
+                {
+                    "message": (
+                        "Interfaces USB detectadas ("
+                        + ", ".join(usb_ifaces)
+                        + "). Ajustando streams para 2 nessas interfaces para reduzir divisao/instabilidade."
+                    ),
+                    "fatal": False,
+                },
+                sid,
+                run_id,
+            )
+        tests: List[Tuple[str, str, int, int]] = []
         port_idx = 0
         for iface in interfaces:
             for mode in modes:
                 port = base_port + port_idx
-                tests.append((iface, mode, port))
+                flow_parallel = recommended_parallel_for_interface(iface, parallel)
+                tests.append((iface, mode, port, flow_parallel))
                 port_idx += 1
         socketio.start_background_task(
             run_parallel_tests,

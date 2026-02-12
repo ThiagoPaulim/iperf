@@ -530,7 +530,8 @@ socket.on("phase_started", (msg) => {
 
 socket.on("flow_started", (msg) => {
   if (!isCurrentRunMessage(msg)) return;
-  log(`Fluxo iniciado: ${msg.interface} ${msg.mode} porta ${msg.port} (tentativa ${msg.attempt})`);
+  const p = msg.parallel || "?";
+  log(`Fluxo iniciado: ${msg.interface} ${msg.mode} porta ${msg.port} P${p} (tentativa ${msg.attempt})`);
 });
 
 socket.on("metrics_update", (msg) => {
