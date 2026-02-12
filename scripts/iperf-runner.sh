@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-12-r16"
+RUNNER_REV="2026-02-12-r17"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 ENABLE_MULTIHOME_TUNING="${ENABLE_MULTIHOME_TUNING:-1}"
@@ -24,6 +24,7 @@ CONNECT_TIMEOUT_MS="${CONNECT_TIMEOUT_MS:-12000}"
 PRECHECK_TIMEOUT_S="${PRECHECK_TIMEOUT_S:-3.0}"
 ENABLE_TCP_PRECHECK="${ENABLE_TCP_PRECHECK:-0}"
 ENABLE_TASKSET_PINNING="${ENABLE_TASKSET_PINNING:-0}"
+ENABLE_USB_NIC_TUNING="${ENABLE_USB_NIC_TUNING:-1}"
 
 # Validacao basica para evitar entradas nao previstas.
 if [[ ! "$IFACE" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
@@ -59,6 +60,15 @@ fi
 if [[ ! "$ENABLE_TASKSET_PINNING" =~ ^[01]$ ]]; then
   ENABLE_TASKSET_PINNING=0
 fi
+if [[ ! "$ENABLE_USB_NIC_TUNING" =~ ^[01]$ ]]; then
+  ENABLE_USB_NIC_TUNING=1
+fi
+
+USB_DEV_PATH=$(readlink -f "/sys/class/net/$IFACE/device" 2>/dev/null || true)
+IS_USB_IFACE=0
+if [[ "$USB_DEV_PATH" == *"/usb"* || "$IFACE" == enx* ]]; then
+  IS_USB_IFACE=1
+fi
 
 tune_multihome_iface() {
   if [[ "$ENABLE_MULTIHOME_TUNING" != "1" ]]; then
@@ -78,6 +88,16 @@ tune_multihome_iface() {
   sysctl -w "net.ipv4.conf.${IFACE}.arp_ignore=1" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.${IFACE}.arp_announce=2" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.conf.${IFACE}.arp_filter=1" >/dev/null 2>&1 || true
+}
+
+tune_usb_nic_performance() {
+  if [[ "$ENABLE_USB_NIC_TUNING" != "1" || "$IS_USB_IFACE" != "1" ]]; then
+    return
+  fi
+  echo "DEBUG: Aplicando tuning USB para $IFACE..." >&2
+  ip link set dev "$IFACE" txqueuelen 10000 >/dev/null 2>&1 || true
+  ethtool -K "$IFACE" gro on gso on tso on tx on rx on >/dev/null 2>&1 || true
+  ethtool -C "$IFACE" adaptive-rx on adaptive-tx on >/dev/null 2>&1 || true
 }
 
 # ---------- Coleta de informacoes da interface ----------
@@ -179,6 +199,7 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
   # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
   if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
     tune_multihome_iface
+    tune_usb_nic_performance
     BEFORE_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true

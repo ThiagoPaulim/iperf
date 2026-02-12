@@ -76,35 +76,6 @@ function clearRunAckTimeout() {
   }
 }
 
-function parseServerIpMap(rawText, selectedInterfaces) {
-  const map = {};
-  const text = (rawText || "").trim();
-  if (!text) return map;
-
-  const parts = text.split(",").map((p) => p.trim()).filter(Boolean);
-  const ipv4Regex = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-
-  for (const part of parts) {
-    const eqPos = part.indexOf("=");
-    if (eqPos <= 0 || eqPos >= part.length - 1) {
-      throw new Error(`Formato invalido no mapeamento: "${part}". Use interface=ip.`);
-    }
-    const iface = part.slice(0, eqPos).trim();
-    const ip = part.slice(eqPos + 1).trim();
-    if (!iface || !ip) {
-      throw new Error(`Formato invalido no mapeamento: "${part}".`);
-    }
-    if (!ipv4Regex.test(ip)) {
-      throw new Error(`IP invalido para ${iface}: ${ip}`);
-    }
-    if (selectedInterfaces.length > 0 && !selectedInterfaces.includes(iface)) {
-      throw new Error(`Interface no mapeamento nao esta selecionada: ${iface}`);
-    }
-    map[iface] = ip;
-  }
-  return map;
-}
-
 function resetRunTotals() {
   currentRunInterfaces = [];
   currentRunModes = [];
@@ -425,9 +396,6 @@ startBtn.addEventListener("click", () => {
   }
 
   const serverIp = document.getElementById("serverIp").value.trim();
-  const serverIpMapRaw = document.getElementById("serverIpMap")
-    ? document.getElementById("serverIpMap").value.trim()
-    : "";
   const duration = Number(document.getElementById("duration").value);
   const mode = document.getElementById("mode").value;
   const basePort = Number(document.getElementById("basePort").value) || 5201;
@@ -449,14 +417,6 @@ startBtn.addEventListener("click", () => {
   }
   if (configureServer && (!sshUser || !sshPass)) {
     showToast("Preencha usuario e senha para configuracao SSH.", "error");
-    return;
-  }
-
-  let serverIpByInterface = {};
-  try {
-    serverIpByInterface = parseServerIpMap(serverIpMapRaw, interfaces);
-  } catch (err) {
-    showToast(err.message || "Mapeamento de IP por interface invalido.", "error");
     return;
   }
 
@@ -495,13 +455,8 @@ startBtn.addEventListener("click", () => {
   } else {
     resetRemoteSystemStats();
   }
-  if (Object.keys(serverIpByInterface).length > 0) {
-    log(`Mapeamento IP por interface ativo: ${Object.entries(serverIpByInterface).map(([k, v]) => `${k}=${v}`).join(", ")}`);
-  }
-
   socket.emit("start_test", {
     server_ip: serverIp,
-    server_ip_by_interface: serverIpByInterface,
     duration,
     mode,
     base_port: basePort,

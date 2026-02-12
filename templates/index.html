@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Teste de Desempenho de Rede - Multi-Interfaces</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260212r18') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260212r19') }}" />
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -58,10 +58,6 @@
         <label>
           IP do servidor
           <input id="serverIp" type="text" placeholder="Ex: 192.168.1.10" />
-        </label>
-        <label style="grid-column: 1 / -1;">
-          IP remoto por interface (opcional)
-          <input id="serverIpMap" type="text" placeholder="Ex: enx001=172.16.10.201, enx002=172.16.10.202" />
         </label>
         <label>
           Tempo (segundos)
@@ -190,7 +186,7 @@
     </section>
   </main>
 
-  <script src="{{ url_for('static', filename='main.js', v='20260212r18') }}"></script>
+  <script src="{{ url_for('static', filename='main.js', v='20260212r19') }}"></script>
 </body>
 
 </html>
