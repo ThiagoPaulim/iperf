@@ -528,6 +528,11 @@ socket.on("phase_started", (msg) => {
   log(`Fase iniciada: ${msg.mode.toUpperCase()}`);
 });
 
+socket.on("flow_started", (msg) => {
+  if (!isCurrentRunMessage(msg)) return;
+  log(`Fluxo iniciado: ${msg.interface} ${msg.mode} porta ${msg.port} (tentativa ${msg.attempt})`);
+});
+
 socket.on("metrics_update", (msg) => {
   if (!isCurrentRunMessage(msg)) return;
   if (!metricsTable) return;

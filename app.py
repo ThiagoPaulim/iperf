@@ -24,7 +24,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r14"
+APP_REV = "2026-02-12-r15"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -613,6 +613,18 @@ def run_single_test(
                 mode=mode,
                 process=process,
             )
+        emit_run_event(
+            "flow_started",
+            {
+                "interface": interface,
+                "mode": mode,
+                "port": port,
+                "attempt": attempt,
+                "timestamp": int(time.time()),
+            },
+            sid,
+            run_id,
+        )
 
         assert process.stdout is not None
         for line in process.stdout:
@@ -802,17 +814,18 @@ def run_parallel_tests(
     """Dispara todos os testes de uma vez para inicio praticamente simultaneo."""
 
     start_event = threading.Event()
+    ready_barrier = threading.Barrier(len(tests) + 1)
     threads = []
 
     def worker(iface: str, mode: str, port: int) -> None:
         start_event.wait()
+        try:
+            # Barreira para alinhar inicio dos fluxos no mesmo instante.
+            ready_barrier.wait(timeout=6)
+        except threading.BrokenBarrierError:
+            return
         if not is_current_run(sid, run_id):
             return
-        # Mantem quase simultaneo, mas evita pico de SYN/controle no mesmo milissegundo.
-        spread_key = f"{iface}:{mode}:{port}:{run_id}"
-        initial_jitter_s = (sum(ord(ch) for ch in spread_key) % 900) / 1000.0
-        if initial_jitter_s > 0:
-            time.sleep(initial_jitter_s)
         run_single_test(server_ip, duration, iface, mode, sid, run_id, port, parallel)
 
     for iface, mode, port in tests:
@@ -821,6 +834,10 @@ def run_parallel_tests(
         threads.append(t)
 
     start_event.set()
+    try:
+        ready_barrier.wait(timeout=6)
+    except threading.BrokenBarrierError:
+        pass
 
     for t in threads:
         t.join()
@@ -860,18 +877,43 @@ for p in $PORTS; do
     ufw allow "$p"/tcp >/dev/null 2>&1 || true
   fi
 done
+
+# Encerra listeners antigos das portas alvo e confirma fechamento.
 for p in $PORTS; do
   fuser -k -n tcp "$p" >/dev/null 2>&1 || true
   pkill -f "iperf3 -s -p $p" >/dev/null 2>&1 || true
+  if ss -ltnp sport = :"$p" 2>/dev/null | grep -q LISTEN; then
+    ss -ltnp sport = :"$p" 2>/dev/null \
+      | awk -F 'pid=' 'NF>1 {{split($2,a,","); print a[1]}}' \
+      | while read -r pid; do
+          [ -n "$pid" ] && kill -9 "$pid" >/dev/null 2>&1 || true
+        done
+  fi
 done
 for p in $PORTS; do
-  for i in $(seq 1 20); do
-    ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN || break
+  closed=0
+  for i in $(seq 1 30); do
+    if ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN; then
+      sleep 0.2
+    else
+      closed=1
+      break
+    fi
+  done
+  if [ "$closed" -eq 1 ]; then
+    echo "CLOSE_OK:$p"
+  else
+    echo "CLOSE_FAIL:$p"
+  fi
+done
+
+# Sobe novamente listeners iperf3 para todas as portas.
+for p in $PORTS; do
+  for i in $(seq 1 3); do
+    iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
+    ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN && break
     sleep 0.2
   done
-done
-for p in $PORTS; do
-  iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
 done
 for p in $PORTS; do
   ok=0
@@ -909,9 +951,29 @@ done
                 if line.startswith("FAIL:")
             }
         )
+        close_fail_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("CLOSE_FAIL:")
+            }
+        )
+        close_ok_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("CLOSE_OK:")
+            }
+        )
 
         if exit_status != 0:
             print(f"Setup remoto retornou status {exit_status}. stderr={err.strip()}", flush=True)
+        if close_fail_ports:
+            return (
+                False,
+                "Nao foi possivel encerrar listeners antigos em todas as portas. "
+                f"Falharam: {close_fail_ports} | Encerradas: {close_ok_ports}",
+            )
         missing_ports = sorted(set(ports) - set(running_ports))
         if missing_ports:
             return (
@@ -920,7 +982,11 @@ done
                 f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports} | "
                 f"Falhas reportadas: {failed_ports} | stderr: {err.strip()[:180]}",
             )
-        return True, f"Servicos iniciados nas portas: {sorted(running_ports)}"
+        return (
+            True,
+            "Servicos reiniciados nas portas: "
+            f"{sorted(running_ports)} | Portas previamente encerradas: {close_ok_ports}",
+        )
 
     except Exception as e:
         return False, f"Erro SSH: {str(e)}"
