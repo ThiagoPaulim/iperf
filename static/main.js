@@ -21,7 +21,7 @@ const remoteRamBar = document.getElementById("remoteRamBar");
 const remoteRamDetails = document.getElementById("remoteRamDetails");
 const throughputCtx = document.getElementById("throughputChart");
 
-// VariÃ¡veis Globais
+// Variaveis globais
 const interfaceGauges = {};
 const interfaceSpeeds = {};
 const latestThroughput = { upload: {}, download: {} };
@@ -32,6 +32,9 @@ let receivedResults = 0;
 let currentRunId = null;
 let awaitingRunAck = false;
 let runAckTimeout = null;
+let currentRunInterfaces = [];
+let currentRunModes = [];
+let totalByMode = { upload: 0, download: 0 };
 
 function isCurrentRunMessage(msg) {
   if (!msg || !Object.prototype.hasOwnProperty.call(msg, "run_id")) return false;
@@ -41,7 +44,7 @@ function isCurrentRunMessage(msg) {
 
 function parseSpeed(speedStr) {
   if (!speedStr || speedStr === "N/A") return 1000;
-  // Extrai o nÃºmero de strings como "2500Mb/s", "10000Mb/s", etc.
+  // Extrai o numero de strings como "2500Mb/s", "10000Mb/s", etc.
   const match = speedStr.match(/(\d+)/);
   return match ? parseInt(match[1]) : 1000;
 }
@@ -73,7 +76,35 @@ function clearRunAckTimeout() {
   }
 }
 
-// ConfiguraÃ§Ã£o do GrÃ¡fico de Linha (Throughput)
+function resetRunTotals() {
+  currentRunInterfaces = [];
+  currentRunModes = [];
+  totalByMode = { upload: 0, download: 0 };
+}
+
+function appendTotalsRows() {
+  if (!resultsTable || currentRunInterfaces.length <= 1) return;
+
+  let overall = 0;
+  currentRunModes.forEach((mode) => {
+    const value = Number(totalByMode[mode] || 0);
+    if (value <= 0) return;
+    overall += value;
+    const row = document.createElement("tr");
+    row.className = "total-row";
+    row.innerHTML = `<td>TOTAL</td><td>${mode}</td><td>OK</td><td>${value.toFixed(2)} Mbps</td>`;
+    resultsTable.appendChild(row);
+  });
+
+  if (currentRunModes.length > 1 && overall > 0) {
+    const row = document.createElement("tr");
+    row.className = "total-row";
+    row.innerHTML = `<td>TOTAL GERAL</td><td>upload+download</td><td>OK</td><td>${overall.toFixed(2)} Mbps</td>`;
+    resultsTable.appendChild(row);
+  }
+}
+
+// Configuracao do grafico de linha (Throughput)
 const throughputChart = new Chart(throughputCtx, {
   type: "line",
   data: { labels: [], datasets: [] },
@@ -113,7 +144,7 @@ const throughputChart = new Chart(throughputCtx, {
   },
 });
 
-// Cores e UtilitÃ¡rios
+// Cores e utilitarios
 const modernColors = [
   '#22d3ee', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#60a5fa'
 ];
@@ -139,7 +170,7 @@ const centerTextPlugin = {
 
     ctx.restore();
 
-    // ConfiguraÃ§Ã£o do texto
+    // Configuracao do texto
     const fontSize = (height / 114).toFixed(2);
     ctx.font = `bold ${fontSize}em Segoe UI`;
     ctx.textBaseline = "middle";
@@ -209,7 +240,7 @@ function createGauge(ctx, label, maxSpeed = 1000) {
         tooltip: { enabled: false },
         centerText: { text: "0.00" } // Estado inicial
       },
-      // Passamos o maxSpeed para ser acessÃ­vel no update
+      // Passamos o maxSpeed para ser acessivel no update
       maxSpeed: displayMax
     },
   });
@@ -287,7 +318,7 @@ function updateGauge(gauge, label, mbps) {
   const rounded = (Math.round(mbps * 100) / 100).toFixed(2);
   const maxSpeed = gauge.options.maxSpeed || 1000;
 
-  // Se o throughput ultrapassar o maxSpeed (ex: burst), ajustamos o grÃ¡fico
+  // Se o throughput ultrapassar o maxSpeed (ex: burst), ajustamos o grafico
   const currentMax = Math.max(maxSpeed, mbps);
 
   gauge.data.datasets[0].data = [mbps, Math.max(0, currentMax - mbps)];
@@ -324,7 +355,7 @@ function showToast(message, type = "info") {
 
   toastContainer.appendChild(toast);
 
-  // Remove apÃ³s 5 segundos
+  // Remove apos 5 segundos
   setTimeout(() => {
     toast.style.animation = "fadeOut 0.3s forwards";
     toast.addEventListener("animationend", () => {
@@ -375,7 +406,7 @@ startBtn.addEventListener("click", () => {
   const sshUser = document.getElementById("sshUser") ? document.getElementById("sshUser").value.trim() : "";
   const sshPass = document.getElementById("sshPass") ? document.getElementById("sshPass").value : "";
 
-  // ValidaÃ§Ãµes com Toast
+  // Validacoes com Toast
   if (!serverIp) {
     showToast("Por favor, informe o IP do servidor.", "error");
     return;
@@ -385,13 +416,13 @@ startBtn.addEventListener("click", () => {
     return;
   }
   if (configureServer && (!sshUser || !sshPass)) {
-    showToast("Preencha UsuÃ¡rio e Senha para configuraÃ§Ã£o SSH.", "error");
+    showToast("Preencha usuario e senha para configuracao SSH.", "error");
     return;
   }
 
   resultsTable.innerHTML = "";
   if (metricsTable) {
-    metricsTable.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#64748b;">Aguardando mÃ©tricas...</td></tr>`;
+    metricsTable.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#64748b;">Aguardando metricas...</td></tr>`;
   }
   throughputChart.data.labels = [];
   throughputChart.data.datasets = [];
@@ -402,6 +433,7 @@ startBtn.addEventListener("click", () => {
   runStarted = false;
   expectedResults = 0;
   receivedResults = 0;
+  resetRunTotals();
   currentRunId = null;
   awaitingRunAck = true;
   clearRunAckTimeout();
@@ -419,7 +451,7 @@ startBtn.addEventListener("click", () => {
 
   log(`Iniciando testes com ${parallel} streams paralelas...`);
   if (configureServer) {
-    log(`ConfiguraÃ§Ã£o remota via SSH ativada.`);
+    log(`Configuracao remota via SSH ativada.`);
   } else {
     resetRemoteSystemStats();
   }
@@ -456,6 +488,8 @@ socket.on("test_started", (msg) => {
   runStarted = true;
   expectedResults = (msg.interfaces?.length || 0) * (msg.modes?.length || 0);
   receivedResults = 0;
+  currentRunInterfaces = Array.isArray(msg.interfaces) ? [...msg.interfaces] : [];
+  currentRunModes = Array.isArray(msg.modes) ? [...msg.modes] : [];
   showToast(`Teste iniciado! Interfaces: ${msg.interfaces.join(", ")}`, "success");
   log(`Testes iniciados para interfaces: ${msg.interfaces.join(", ")}. Modos: ${msg.modes.join(", ")}`);
   if (msg.app_rev) {
@@ -491,7 +525,7 @@ socket.on("test_error", (msg) => {
 
 socket.on("phase_started", (msg) => {
   if (!isCurrentRunMessage(msg)) return;
-  log(`â–¶ Fase iniciada: ${msg.mode.toUpperCase()}`);
+  log(`Fase iniciada: ${msg.mode.toUpperCase()}`);
 });
 
 socket.on("metrics_update", (msg) => {
@@ -535,14 +569,25 @@ socket.on("test_result", (msg) => {
   if (!isCurrentRunMessage(msg)) return;
   const row = document.createElement("tr");
   const status = msg.success ? "OK" : "ERRO";
-  const result = msg.success ? `${msg.final_mbps} Mbps` : (msg.error || "Falha");
+  const finalVal = (typeof msg.final_mbps === "number" && Number.isFinite(msg.final_mbps))
+    ? msg.final_mbps.toFixed(2)
+    : msg.final_mbps;
+  const result = msg.success ? `${finalVal} Mbps` : (msg.error || "Falha");
   row.innerHTML = `<td>${msg.interface}</td><td>${msg.mode}</td><td>${status}</td><td>${result}</td>`;
   resultsTable.appendChild(row);
   log(`Finalizado: ${msg.interface} ${msg.mode} -> ${result}`);
 
+  if (msg.success && typeof msg.final_mbps === "number" && Number.isFinite(msg.final_mbps)) {
+    const modeKey = String(msg.mode || "").toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(totalByMode, modeKey)) {
+      totalByMode[modeKey] += msg.final_mbps;
+    }
+  }
+
   if (runStarted) {
     receivedResults += 1;
     if (expectedResults > 0 && receivedResults >= expectedResults) {
+      appendTotalsRows();
       testInProgress = false;
       runStarted = false;
       awaitingRunAck = false;

@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r12"
+RUNNER_REV="2026-02-12-r13"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 
@@ -84,6 +84,7 @@ TABLE_ID=$((IFINDEX + 1000))
 RULE_PREF_FROM=$((20000 + IFINDEX))
 LOCK_FILE="/tmp/iperf-runner-${IFACE}.lock"
 COUNT_FILE="/tmp/iperf-runner-${IFACE}.count"
+LOCK_READY=0
 GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/default via/{print $3}' | head -n1)
 [[ -z "$GATEWAY" ]] && GATEWAY=$(ip -4 route show dev "$IFACE" table main | awk '/via/{print $3}' | head -n1)
 ROUTE_HINT=$(ip -4 route get "$SERVER_IP" oif "$IFACE" 2>/dev/null | head -n1 || true)
@@ -93,7 +94,7 @@ if [[ -n "$HINT_GATEWAY" ]]; then
 fi
 
 cleanup() {
-  if [[ "$ENABLE_POLICY_ROUTING" != "1" ]]; then
+  if [[ "$ENABLE_POLICY_ROUTING" != "1" || "$LOCK_READY" != "1" ]]; then
     return
   fi
 
@@ -103,6 +104,7 @@ cleanup() {
   if [[ -f "$COUNT_FILE" ]]; then
     active_count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
   fi
+  [[ "$active_count" =~ ^[0-9]+$ ]] || active_count=0
   if [[ "$active_count" -gt 0 ]]; then
     active_count=$((active_count - 1))
   fi
@@ -110,10 +112,10 @@ cleanup() {
   if [[ "$active_count" -le 0 ]]; then
     rm -f "$COUNT_FILE"
     echo "DEBUG: Restaurando estado original de $IFACE..." >&2
-    BEFORE_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    BEFORE_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
-    AFTER_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    AFTER_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     echo "DEBUG: policy cleanup iface=$IFACE pref=$RULE_PREF_FROM rules_before=$BEFORE_RULES rules_after=$AFTER_RULES table=$TABLE_ID" >&2
   else
     echo "$active_count" > "$COUNT_FILE"
@@ -124,6 +126,7 @@ trap cleanup EXIT INT TERM
 
 if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
   exec 9>"$LOCK_FILE"
+  LOCK_READY=1
   flock 9
   ACTIVE_COUNT=0
   if [[ -f "$COUNT_FILE" ]]; then
@@ -135,16 +138,19 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
   if [[ -f "$COUNT_FILE" ]]; then
     ACTIVE_COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
   fi
+  [[ "$ACTIVE_COUNT" =~ ^[0-9]+$ ]] || ACTIVE_COUNT=0
   ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
   echo "$ACTIVE_COUNT" > "$COUNT_FILE"
 
   # Primeiro fluxo da interface prepara tabela/rotas do zero (evita "File exists" residual).
   if [[ "$ACTIVE_COUNT" -eq 1 ]]; then
-    BEFORE_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    BEFORE_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     while ip rule del pref "$RULE_PREF_FROM" 2>/dev/null; do :; done
     ip route flush table "$TABLE_ID" 2>/dev/null || true
-    ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
-    AFTER_RULES=$(ip rule show 2>/dev/null | grep -c "pref $RULE_PREF_FROM" || true)
+    if ! ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {found=1} END {exit(found?0:1)}'; then
+      ip rule add from "$BIND_IP" table "$TABLE_ID" pref "$RULE_PREF_FROM" 2>/dev/null || true
+    fi
+    AFTER_RULES=$(ip rule show 2>/dev/null | awk -v p="$RULE_PREF_FROM" '$1 ~ ("^" p ":") {c++} END {print c+0}')
     echo "DEBUG: policy setup iface=$IFACE pref=$RULE_PREF_FROM rules_before=$BEFORE_RULES rules_after=$AFTER_RULES table=$TABLE_ID src=$BIND_IP" >&2
   fi
 

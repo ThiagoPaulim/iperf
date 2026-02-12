@@ -281,6 +281,11 @@ tr:hover td {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.total-row td {
+  background: rgba(34, 211, 238, 0.12);
+  font-weight: 700;
+}
+
 /* ---------- Charts ---------- */
 .chart-container {
   /* Limita a altura do gráfico de linha para evitar que ocupe a tela toda */

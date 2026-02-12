@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Teste de Desempenho de Rede - Multi-Interfaces</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260211r10f') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260212r11') }}" />
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -48,12 +48,12 @@
 
     <h1>Teste de Desempenho de Rede</h1>
     <div class="version-banner">
-      Versão backend: <strong>{{ app_rev }}</strong> |
+      Versao backend: <strong>{{ app_rev }}</strong> |
       Runner: <strong>{{ runner_rev }}</strong>
     </div>
 
     <section class="card">
-      <h2>ConfiguraÃ§Ã£o</h2>
+      <h2>Configuracao</h2>
       <div class="form-grid">
         <label>
           IP do servidor
@@ -68,7 +68,7 @@
           <select id="mode">
             <option value="upload">Upload</option>
             <option value="download">Download</option>
-            <option value="both">Ambos (simultÃ¢neo)</option>
+            <option value="both">Ambos (simultaneo)</option>
             <option value="both_sequential">Ambos - Separados</option>
           </select>
         </label>
@@ -90,7 +90,7 @@
 
         <div id="sshFields" class="form-grid" style="grid-column: 1 / -1; display: none;">
           <label>
-            UsuÃ¡rio SSH
+            Usuario SSH
             <input id="sshUser" type="text" placeholder="root" />
           </label>
           <label>
@@ -105,15 +105,15 @@
         <strong>Nota:</strong> Cada interface usa uma porta diferente no servidor iperf3 (porta base, base+1,
         base+2...).
         <br>No modo <strong>Ambos (simultaneo)</strong>, sao usadas <strong>2 portas por interface</strong> (upload e download).
-        Certifique-se de ter instÃ¢ncias iperf3 rodando em cada porta no servidor.
+        Certifique-se de ter instancias iperf3 rodando em cada porta no servidor.
         <br>Ex: <code>iperf3 -s -p 5201</code>, <code>iperf3 -s -p 5202</code>, <code>iperf3 -s -p 5203</code>...
-        <br>Use mais streams (ex: 4 ou 8) para tentar atingir a velocidade mÃ¡xima.
+        <br>Use mais streams (ex: 4 ou 8) para tentar atingir a velocidade maxima.
       </p>
 
       <h3>Interfaces detectadas</h3>
       <div class="iface-actions">
         <button id="selectAllBtn" type="button" class="secondary-btn">Selecionar todas</button>
-        <button id="clearAllBtn" type="button" class="secondary-btn">Limpar seleção</button>
+        <button id="clearAllBtn" type="button" class="secondary-btn">Limpar selecao</button>
       </div>
       <table>
         <thead>
@@ -123,7 +123,7 @@
             <th>IPv4</th>
             <th>Velocidade</th>
             <th>Duplex</th>
-            <th>Auto-negociaÃ§Ã£o</th>
+            <th>Auto-negociacao</th>
           </tr>
         </thead>
         <tbody id="interfacesTable"></tbody>
@@ -133,18 +133,18 @@
     </section>
 
     <section class="card">
-      <h2>MÃ©tricas Iniciais (Ping)</h2>
+      <h2>Metricas Iniciais (Ping)</h2>
       <table>
         <thead>
           <tr>
             <th>Interface</th>
             <th>Modo</th>
-            <th>Ping (LatÃªncia)</th>
+            <th>Ping (Latencia)</th>
           </tr>
         </thead>
         <tbody id="metricsTable">
           <tr>
-            <td colspan="3" style="text-align:center; color:#64748b;">Inicie o teste para ver as mÃ©tricas...</td>
+            <td colspan="3" style="text-align:center; color:#64748b;">Inicie o teste para ver as metricas...</td>
           </tr>
         </tbody>
       </table>
@@ -153,7 +153,7 @@
     <section class="card">
       <h2>SpeedTest por Interface (Mbps)</h2>
       <div id="gaugeContainer" class="gauge-container">
-        <p class="placeholder-text">Inicie um teste para ver os velocÃ­metros.</p>
+        <p class="placeholder-text">Inicie um teste para ver os velocimetros.</p>
       </div>
     </section>
 
@@ -185,7 +185,7 @@
     </section>
   </main>
 
-  <script src="{{ url_for('static', filename='main.js', v='20260211r10f') }}"></script>
+  <script src="{{ url_for('static', filename='main.js', v='20260212r11') }}"></script>
 </body>
 
 </html>

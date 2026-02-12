@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""AplicaÃ§Ã£o Flask + Socket.IO para executar testes iperf3 por interface."""
+"""Aplicacao Flask + Socket.IO para executar testes iperf3 por interface."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-11-r10f"
+APP_REV = "2026-02-12-r11"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -74,7 +74,7 @@ def get_runner_revision() -> str:
 
 @dataclass
 class TestTask:
-    """Representa uma execuÃ§Ã£o iperf em uma interface/modo."""
+    """Representa uma execucao iperf em uma interface/modo."""
 
     sid: str
     run_id: str
@@ -270,7 +270,7 @@ def stop_remote_monitor(sid: str, expected_event: Optional[threading.Event] = No
 
 
 def run_command(cmd: List[str]) -> str:
-    """Executa comando sem shell para evitar injeÃ§Ã£o de comandos."""
+    """Executa comando sem shell para evitar injecao de comandos."""
 
     completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if completed.returncode != 0:
@@ -324,7 +324,7 @@ def parse_mbps(value: float, unit: str) -> float:
 
 
 def is_transient_iperf_error(text: str) -> bool:
-    """Detecta falhas transitórias que valem uma retentativa curta."""
+    """Detecta falhas transitorias que valem uma retentativa curta."""
 
     t = (text or "").lower()
     transient_patterns = (
@@ -341,6 +341,43 @@ def is_transient_iperf_error(text: str) -> bool:
         "cannot assign requested address",
     )
     return any(p in t for p in transient_patterns)
+
+
+def has_hard_iperf_failure(text: str) -> bool:
+    """Assinaturas de falha real (nao aproveita resultado parcial)."""
+
+    t = (text or "").lower()
+    hard_patterns = (
+        "unable to connect to server",
+        "connection timed out",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "precheck tcp falhou",
+        "sem rota valida",
+        "rota final nao saiu",
+        "cannot assign requested address",
+        "network is down",
+    )
+    return any(p in t for p in hard_patterns)
+
+
+def build_error_tail(lines: deque) -> str:
+    """Resume as ultimas linhas, priorizando erro util ao inves de debug."""
+
+    filtered = []
+    for item in list(lines)[-16:]:
+        if not item:
+            continue
+        lower = item.lower()
+        if lower.startswith("debug:") or lower.startswith("debug_route:"):
+            continue
+        filtered.append(item)
+
+    if not filtered:
+        filtered = [item for item in list(lines)[-8:] if item]
+
+    return " | ".join(filtered[-10:])
 
 
 def should_skip_interface(raw_name: str, flags: List[str]) -> bool:
@@ -436,23 +473,23 @@ def validate_payload(payload: dict) -> Optional[str]:
     required = ["server_ip", "duration", "mode", "interfaces"]
     for key in required:
         if key not in payload:
-            return f"Campo obrigatÃ³rio ausente: {key}"
+            return f"Campo obrigatorio ausente: {key}"
 
     try:
         ipaddress.ip_address(payload["server_ip"])
     except ValueError:
-        return "IP do servidor invÃ¡lido."
+        return "IP do servidor invalido."
 
     try:
         duration = int(payload["duration"])
     except (TypeError, ValueError):
-        return "Tempo do teste deve ser numÃ©rico."
+        return "Tempo do teste deve ser numerico."
 
     if duration < 1 or duration > 3600:
         return "Tempo do teste deve estar entre 1 e 3600 segundos."
 
     if payload["mode"] not in {"upload", "download", "both", "both_sequential"}:
-        return "Modo invÃ¡lido."
+        return "Modo invalido."
 
     if not isinstance(payload["interfaces"], list) or not payload["interfaces"]:
         return "Selecione ao menos uma interface."
@@ -460,7 +497,7 @@ def validate_payload(payload: dict) -> Optional[str]:
     try:
         base_port = int(payload.get("base_port", 5201))
     except (TypeError, ValueError):
-        return "Porta base deve ser numÃ©rica."
+        return "Porta base deve ser numerica."
 
     if base_port < 1 or base_port > 65535:
         return "Porta base deve estar entre 1 e 65535."
@@ -468,7 +505,7 @@ def validate_payload(payload: dict) -> Optional[str]:
     try:
         parallel = int(payload.get("parallel", 4))
     except (TypeError, ValueError):
-        return "Parallel deve ser numÃ©rico."
+        return "Parallel deve ser numerico."
 
     if parallel < 1 or parallel > 64:
         return "Parallel deve estar entre 1 e 64."
@@ -476,7 +513,7 @@ def validate_payload(payload: dict) -> Optional[str]:
     available = {item["name"] for item in list_interfaces()}
     for iface in payload["interfaces"]:
         if iface not in available:
-            return f"Interface invÃ¡lida: {iface}"
+            return f"Interface invalida: {iface}"
 
     return None
 
@@ -493,7 +530,7 @@ def run_single_test(
     retry_left: int = FLOW_RETRIES,
     attempt: int = 1,
 ) -> None:
-    """Executa um Ãºnico fluxo iperf e envia atualizaÃ§Ãµes em tempo real."""
+    """Executa um unico fluxo iperf e envia atualizacoes em tempo real."""
 
     task_id = f"{sid}:{interface}:{mode}:{port}:{time.time_ns()}"
     cmd = [
@@ -517,13 +554,13 @@ def run_single_test(
     final_mbps = 0.0
     recent_lines = deque(maxlen=80)
     # Regex base para capturar throughput
-    # Formato padrÃ£o: [  5] ...
+    # Formato padrao: [  5] ...
     # Formato SUM:    [SUM] ...
     line_pattern = re.compile(
         r"\[\s*(\d+|SUM)\]\s+\d+\.\d+-\d+\.\d+\s+sec\s+\S+\s+(\S+Bytes|Bytes)\s+([\d.]+)\s+([KMG])bits/sec"
     )
 
-    # Regex para capturar mÃ©tricas iniciais (Ping)
+    # Regex para capturar metricas iniciais (Ping)
     # Formato esperado: [METRICS] Ping: 15.20 ms
     metrics_pattern = re.compile(r"\[METRICS\] Ping: ([\d.]+) ms")
 
@@ -562,7 +599,7 @@ def run_single_test(
             # Log para debug em tempo real no terminal do container
             print(f"[iperf3 raw] {interface}:{mode} -> {line}", flush=True)
 
-            # Checa se Ã© linha de mÃ©trica
+            # Checa se e linha de metrica
             m_metrics = metrics_pattern.search(line)
             if m_metrics:
                 ping_val = m_metrics.group(1)
@@ -582,13 +619,13 @@ def run_single_test(
             if match:
                 stream_id = match.group(1)  # ID ou SUM
                 # Se usarmos parallel > 1, queremos APENAS a linha [SUM].
-                # Se usarmos parallel = 1, queremos a linha normal (que tem ID numÃ©rico).
+                # Se usarmos parallel = 1, queremos a linha normal (que tem ID numerico).
                 if parallel > 1 and stream_id != "SUM":
                     continue
                 if parallel == 1 and stream_id == "SUM":
                     continue
 
-                # O grupo 3 Ã© valor, grupo 4 Ã© unidade.
+                # O grupo 3 e valor, grupo 4 e unidade.
                 raw = float(match.group(3))
                 unit = match.group(4)
                 mbps = round(parse_mbps(raw, unit), 2)
@@ -621,7 +658,32 @@ def run_single_test(
                 run_id,
             )
         else:
-            error_tail = " | ".join([item for item in list(recent_lines)[-10:] if item])
+            error_tail = build_error_tail(recent_lines)
+            if final_mbps > 0 and not has_hard_iperf_failure(error_tail):
+                emit_run_event(
+                    "test_error",
+                    {
+                        "message": (
+                            f"Fluxo {interface} ({mode}) finalizou com aviso, "
+                            f"mas throughput valido foi mantido ({final_mbps} Mbps)."
+                        ),
+                        "fatal": False,
+                    },
+                    sid,
+                    run_id,
+                )
+                emit_run_event(
+                    "test_result",
+                    {
+                        "interface": interface,
+                        "mode": mode,
+                        "success": True,
+                        "final_mbps": final_mbps,
+                    },
+                    sid,
+                    run_id,
+                )
+                return
             if retry_left > 0 and is_current_run(sid, run_id) and is_transient_iperf_error(error_tail):
                 wait_s = min(3.0, 0.7 + (attempt * 0.6))
                 emit_run_event(
@@ -733,7 +795,7 @@ def run_parallel_tests(
 
 
 def setup_remote_server(ip, user, password, ports):
-    """Conecta via SSH e inicia instÃ¢ncias do iperf3 nas portas necessÃ¡rias."""
+    """Conecta via SSH e inicia instancias do iperf3 nas portas necessarias."""
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
@@ -806,7 +868,7 @@ done
                 f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports} | "
                 f"Falhas reportadas: {failed_ports} | stderr: {err.strip()[:180]}",
             )
-        return True, f"ServiÃ§os iniciados nas portas: {sorted(running_ports)}"
+        return True, f"Servicos iniciados nas portas: {sorted(running_ports)}"
 
     except Exception as e:
         return False, f"Erro SSH: {str(e)}"
@@ -966,7 +1028,7 @@ def on_disconnect():
 
 @socketio.on("start_test")
 def start_test(payload: dict):
-    """Inicia testes simultÃ¢neos de acordo com interfaces e modo selecionados."""
+    """Inicia testes simultaneos de acordo com interfaces e modo selecionados."""
 
     sid = request.sid
     stop_remote_monitor(sid)
@@ -979,7 +1041,7 @@ def start_test(payload: dict):
         emit_run_event("test_error", {"message": error}, sid, run_id)
         return
 
-    # Verifica configuraÃ§Ã£o remota opcional
+    # Verifica configuracao remota opcional
     configure_server = bool(payload.get("configure_server", False))
     ssh_user = payload.get("ssh_user")
     ssh_pass = payload.get("ssh_pass")
@@ -1005,7 +1067,7 @@ def start_test(payload: dict):
         emit_run_event(
             "test_error",
             {
-                "message": "Reiniciando... aguardando liberaÃ§Ã£o de recursos do teste anterior.",
+                "message": "Reiniciando... aguardando liberacao de recursos do teste anterior.",
                 "fatal": False,
             },
             sid,
@@ -1013,9 +1075,9 @@ def start_test(payload: dict):
         )
         time.sleep(2)
 
-    # Portas necessÃ¡rias
-    # Se modo for 'both' (simultÃ¢neo), precisamos de 2 portas por interface (uma pra up, uma pra down).
-    # Em 'both_sequential', reutilizamos a mesma porta pois as fases nÃ£o se sobrepÃµem.
+    # Portas necessarias
+    # Se modo for 'both' (simultaneo), precisamos de 2 portas por interface (uma pra up, uma pra down).
+    # Em 'both_sequential', reutilizamos a mesma porta pois as fases nao se sobrepoem.
     needed_ports: List[int] = []
     if selected_mode == "both":
         total_slots = len(interfaces) * 2
@@ -1028,7 +1090,7 @@ def start_test(payload: dict):
         if not ssh_user or not ssh_pass:
             emit_run_event(
                 "test_error",
-                {"message": "UsuÃ¡rio e Senha SSH sÃ£o obrigatÃ³rios para configuraÃ§Ã£o automÃ¡tica."},
+                {"message": "Usuario e senha SSH sao obrigatorios para configuracao automatica."},
                 sid,
                 run_id,
             )
@@ -1042,7 +1104,7 @@ def start_test(payload: dict):
         )
         success, msg = setup_remote_server(server_ip, ssh_user, ssh_pass, needed_ports)
         if not success:
-            emit_run_event("test_error", {"message": f"Falha na configuraÃ§Ã£o remota: {msg}"}, sid, run_id)
+            emit_run_event("test_error", {"message": f"Falha na configuracao remota: {msg}"}, sid, run_id)
             return
 
         print(f"Servidor remoto configurado: {msg}", flush=True)
@@ -1121,7 +1183,7 @@ def start_test(payload: dict):
             parallel,
         )
     else:
-        # Modos simultÃ¢neos: todos os testes ao mesmo tempo.
+        # Modos simultaneos: todos os testes ao mesmo tempo.
         tests: List[Tuple[str, str, int]] = []
         port_idx = 0
         for iface in interfaces:
