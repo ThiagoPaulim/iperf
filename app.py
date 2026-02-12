@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-11-r10e"
+APP_REV = "2026-02-11-r10f"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")

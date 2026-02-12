@@ -16,7 +16,7 @@ DURATION="$3"
 MODE="$4"
 PORT="$5"
 PARALLEL="$6"
-RUNNER_REV="2026-02-11-r11"
+RUNNER_REV="2026-02-11-r12"
 ENABLE_SYSCTL_TUNING="${ENABLE_SYSCTL_TUNING:-0}"
 ENABLE_POLICY_ROUTING="${ENABLE_POLICY_ROUTING:-1}"
 
@@ -56,6 +56,20 @@ fi
 
 # Obtem a subnet/prefixo da interface.
 SUBNET=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | head -n1)
+SERVER_IN_SUBNET=0
+if python - "$SUBNET" "$SERVER_IP" <<'PY'
+import ipaddress, sys
+subnet, server_ip = sys.argv[1], sys.argv[2]
+try:
+    net = ipaddress.ip_network(subnet, strict=False)
+    ip = ipaddress.ip_address(server_ip)
+    sys.exit(0 if ip in net else 1)
+except Exception:
+    sys.exit(1)
+PY
+then
+  SERVER_IN_SUBNET=1
+fi
 
 echo "Iniciando runner na interface $IFACE... (rev: $RUNNER_REV)" >&2
 
@@ -139,12 +153,20 @@ if [[ "$ENABLE_POLICY_ROUTING" == "1" ]]; then
     ip route replace "$SUBNET" dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
   fi
 
-  if [[ -n "$GATEWAY" ]]; then
+  if [[ "$SERVER_IN_SUBNET" == "1" ]]; then
+    # Quando servidor e interface estao na mesma faixa, evita forcar via gateway.
+    ip route replace "$SERVER_IP"/32 dev "$IFACE" scope link src "$BIND_IP" table "$TABLE_ID" 2>/dev/null || true
+    if [[ -n "$GATEWAY" ]]; then
+      ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
+    fi
+  elif [[ -n "$GATEWAY" ]]; then
     ip route replace "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
     ip route replace default via "$GATEWAY" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
   else
     ip route replace "$SERVER_IP" dev "$IFACE" table "$TABLE_ID" 2>/dev/null || true
   fi
+
+  echo "DEBUG: same_subnet=$SERVER_IN_SUBNET subnet=$SUBNET gateway=${GATEWAY:-none}" >&2
 
   flock -u 9
 else
@@ -186,10 +208,15 @@ import socket, sys
 bind_ip, server_ip, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.settimeout(2.0)
-s.bind((bind_ip, 0))
-s.connect((server_ip, port))
-s.close()
-print("ok")
+try:
+    s.bind((bind_ip, 0))
+    s.connect((server_ip, port))
+    print("ok")
+except Exception as exc:
+    print(f"precheck_error:{exc}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    s.close()
 PY
   then
     PRECHECK_OK=1
