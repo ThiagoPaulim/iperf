@@ -24,7 +24,7 @@ from flask_socketio import SocketIO, emit
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNNER_SCRIPT = BASE_DIR / "scripts" / "iperf-runner.sh"
-APP_REV = "2026-02-12-r15"
+APP_REV = "2026-02-12-r16"
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "iperf-web-secret")
@@ -903,14 +903,14 @@ for p in $PORTS; do
   if [ "$closed" -eq 1 ]; then
     echo "CLOSE_OK:$p"
   else
-    echo "CLOSE_FAIL:$p"
+    echo "CLOSE_BUSY:$p"
   fi
 done
 
 # Sobe novamente listeners iperf3 para todas as portas.
 for p in $PORTS; do
   for i in $(seq 1 3); do
-    iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
+    ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN || iperf3 -s -p "$p" -D >/dev/null 2>&1 || true
     ss -ltn sport = :"$p" 2>/dev/null | grep -q LISTEN && break
     sleep 0.2
   done
@@ -925,9 +925,21 @@ for p in $PORTS; do
     sleep 0.2
   done
   if [ "$ok" -eq 1 ]; then
-    echo "OK:$p"
+    echo "LISTEN_OK:$p"
   else
-    echo "FAIL:$p"
+    echo "LISTEN_FAIL:$p"
+  fi
+done
+for p in $PORTS; do
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 iperf3 -c 127.0.0.1 -p "$p" -t 1 -P 1 -f m >/dev/null 2>&1
+  else
+    iperf3 -c 127.0.0.1 -p "$p" -t 1 -P 1 -f m >/dev/null 2>&1
+  fi
+  if [ "$?" -eq 0 ]; then
+    echo "HEALTH_OK:$p"
+  else
+    echo "HEALTH_FAIL:$p"
   fi
 done
 """
@@ -937,25 +949,25 @@ done
         out = stdout.read().decode(errors="ignore")
         err = stderr.read().decode(errors="ignore")
 
-        running_ports = sorted(
+        listen_ok_ports = sorted(
             {
                 int(line.split(":", 1)[1].strip())
                 for line in out.splitlines()
-                if line.startswith("OK:")
+                if line.startswith("LISTEN_OK:")
             }
         )
-        failed_ports = sorted(
+        listen_fail_ports = sorted(
             {
                 int(line.split(":", 1)[1].strip())
                 for line in out.splitlines()
-                if line.startswith("FAIL:")
+                if line.startswith("LISTEN_FAIL:")
             }
         )
-        close_fail_ports = sorted(
+        close_busy_ports = sorted(
             {
                 int(line.split(":", 1)[1].strip())
                 for line in out.splitlines()
-                if line.startswith("CLOSE_FAIL:")
+                if line.startswith("CLOSE_BUSY:")
             }
         )
         close_ok_ports = sorted(
@@ -965,27 +977,42 @@ done
                 if line.startswith("CLOSE_OK:")
             }
         )
+        health_ok_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("HEALTH_OK:")
+            }
+        )
+        health_fail_ports = sorted(
+            {
+                int(line.split(":", 1)[1].strip())
+                for line in out.splitlines()
+                if line.startswith("HEALTH_FAIL:")
+            }
+        )
 
         if exit_status != 0:
             print(f"Setup remoto retornou status {exit_status}. stderr={err.strip()}", flush=True)
-        if close_fail_ports:
-            return (
-                False,
-                "Nao foi possivel encerrar listeners antigos em todas as portas. "
-                f"Falharam: {close_fail_ports} | Encerradas: {close_ok_ports}",
-            )
-        missing_ports = sorted(set(ports) - set(running_ports))
+        missing_ports = sorted(set(ports) - set(listen_ok_ports))
         if missing_ports:
             return (
                 False,
                 "Falha ao iniciar iperf3 em todas as portas. "
-                f"Ativas: {sorted(running_ports)} | Faltando: {missing_ports} | "
-                f"Falhas reportadas: {failed_ports} | stderr: {err.strip()[:180]}",
+                f"Ativas: {sorted(listen_ok_ports)} | Faltando: {missing_ports} | "
+                f"Falhas listen: {listen_fail_ports} | stderr: {err.strip()[:180]}",
+            )
+        if health_fail_ports:
+            return (
+                False,
+                "Portas abertas, mas sem resposta valida do iperf3 em: "
+                f"{health_fail_ports}. Portas saudaveis: {health_ok_ports}",
             )
         return (
             True,
             "Servicos reiniciados nas portas: "
-            f"{sorted(running_ports)} | Portas previamente encerradas: {close_ok_ports}",
+            f"{sorted(listen_ok_ports)} | Portas previamente encerradas: {close_ok_ports}"
+            + (f" | Portas ocupadas reaproveitadas: {close_busy_ports}" if close_busy_ports else ""),
         )
 
     except Exception as e:
