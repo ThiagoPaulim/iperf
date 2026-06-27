@@ -1,0 +1,19 @@
+services:
+  iperf-web-client:
+    build: .
+    container_name: iperf-web-client
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    environment:
+      - SECRET_KEY=change-me-in-production
+      - ENABLE_SYSCTL_TUNING=0
+      - ENABLE_POLICY_ROUTING=1
+      - ENABLE_MULTIHOME_TUNING=1
+      - ENABLE_USB_NIC_TUNING=1
+      - ENABLE_TCP_PRECHECK=0
+      - ENABLE_TASKSET_PINNING=0
+      - CONNECT_TIMEOUT_MS=12000
+      - ALLOW_VIRTUAL_INTERFACES=1
+      - FLOW_RETRIES=3
