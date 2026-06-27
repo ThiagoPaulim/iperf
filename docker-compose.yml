@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: always
+    environment:
+      MININGHUB_DATABASE_URL: sqlite+aiosqlite:///./data/mininghub.db
+      MININGHUB_JWT_SECRET: ${MININGHUB_JWT_SECRET:-change-this-secret-before-production}
+    volumes:
+      - mininghub-data:/app/backend/data
+    depends_on: [redis]
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: always
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes: [redis-data:/data]
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    ports: ["8080:80"]
+    volumes: [./nginx/nginx.conf:/etc/nginx/nginx.conf:ro]
+    depends_on: [backend, frontend]
+volumes: {mininghub-data: {}, redis-data: {}}
