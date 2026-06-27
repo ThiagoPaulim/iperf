@@ -1,0 +1,1 @@
+{"name":"MiningHub","title":"MiningHub","description":"Monitoramento profissional de mineradores Bitcoin/DigiByte","category":"Utilities","port_map":"8080","index":"/","scheme":"http","architectures":["amd64","arm64"],"compose_file":"docker-compose.yml"}
